@@ -4,19 +4,19 @@ Step 1. Install adda to your computer
 
 1. Conda environment setting
 
-conda create -n adda python=3.11
-conda activate adda
-conda install -c conda-forge gcc_linux-64 gxx_linux-64 gfortran_linux-64 fftw openmpi
-conda install matplotlib
-conda install pandas
-conda install numpy  
-conda install seaborn
-conda install scipy
+conda create -n adda python=3.11 \
+conda activate adda \
+conda install -c conda-forge gcc_linux-64 gxx_linux-64 gfortran_linux-64 fftw openmpi \
+conda install matplotlib \
+conda install pandas \
+conda install numpy \
+conda install seaborn \
+conda install scipy \
 
 2. Find the location of the installed compiler and libraries
-which x86_64-conda-linux-gnu-gcc
-which x86_64-conda-linux-gnu-g++
-which x86_64-conda-linux-gnu-gfortran
+which x86_64-conda-linux-gnu-gcc \
+which x86_64-conda-linux-gnu-g++ \
+which x86_64-conda-linux-gnu-gfortran \
 echo $CONDA_PREFIX  # Conda environment route
 
 3. Get the adda source code by git clone
