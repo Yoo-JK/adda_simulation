@@ -1,7 +1,5 @@
 ADDA Simulation
 
-Step 1. Install adda to your computer
-
 1. Conda environment setting
 conda create -n adda python=3.11 \
 conda activate adda \
