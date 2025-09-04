@@ -10,7 +10,7 @@ conda install matplotlib \
 conda install pandas \
 conda install numpy \
 conda install seaborn \
-conda install scipy \
+conda install scipy
 
 3. Find the location of the installed compiler and libraries
 which x86_64-conda-linux-gnu-gcc \
