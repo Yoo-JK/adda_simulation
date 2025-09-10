@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 ADDA 후처리 메인 스크립트 - 최종 버전
 process_result.py
 
 실제 사용법:
-    python3 process_result.py                    # 모든 모델 분석
-    python3 process_result.py --model MODEL     # 특정 모델만 분석
-    python3 process_result.py --show-plots      # 플롯 화면에 표시
-    python3 process_result.py --verbose         # 상세 로그
+    python process_result.py                    # 모든 모델 분석
+    python process_result.py --model MODEL     # 특정 모델만 분석
+    python process_result.py --show-plots      # 플롯 화면에 표시
+    python process_result.py --verbose         # 상세 로그
 """
 import argparse
 import sys
@@ -40,16 +40,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 process_result.py
+  python process_result.py
     → ~/research/adda 내 모든 model_* 폴더 분석
     
-  python3 process_result.py --model model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0
+  python process_result.py --model model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0
     → 특정 모델만 분석
     
-  python3 process_result.py --show-plots
+  python process_result.py --show-plots
     → 플롯을 화면에도 표시 (저장 + 화면 표시)
     
-  python3 process_result.py --base-dir /custom/path
+  python process_result.py --base-dir /custom/path
     → 다른 경로의 결과 분석
         """
     )

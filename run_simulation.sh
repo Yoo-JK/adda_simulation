@@ -1,7 +1,12 @@
 #!/bin/bash
 
-# ADDA 시뮬레이션 전용 스크립트 - 최종 버전
-# 후처리는 완전히 분리됨
+# ADDA 시뮬레이션 전용 스크립트 - 간소화된 버전
+# config.py에서 모든 설정(굴절률 포함)을 가져와서 사용
+
+# 설정 파일 경로 결정
+CONFIG_FILE=${ADDA_CONFIG_FILE:-"./config/config.py"}
+
+echo "🔧 Using config file: $CONFIG_FILE"
 
 # MPI 실행 환경 감지
 if command -v mpiexec >/dev/null 2>&1; then
@@ -13,70 +18,110 @@ else
     exit 1
 fi
 
-# config/config.py에서 설정 로드 (Python으로)
-echo "Loading configuration from config/config.py..."
-if ! python3 -c "from config.config import *" 2>/dev/null; then
-    echo "ERROR: Could not load config/config.py"
-    echo "Please ensure config/config.py exists and is valid"
+# 설정 파일 존재 확인
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
     exit 1
 fi
 
-# 설정 변수들 (config/config.py에서 가져오기)
-MAT_TYPE=model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0
-ADDA_BIN=$HOME/adda/src
-MY_DATA=$HOME/dataset/adda/str/${MAT_TYPE}.shape
-RESULT_BASE_DIR1=$HOME/research/adda/$MAT_TYPE
+# config 파일에서 기본 설정값들 로드
+echo "📋 Loading configuration from $CONFIG_FILE..."
+CONFIG_VALUES=$(python << EOF
+try:
+    import sys
+    from pathlib import Path
+    
+    # config 파일 동적 로드
+    config_path = Path("$CONFIG_FILE").resolve()
+    config_dir = config_path.parent
+    config_module = config_path.stem
+    
+    sys.path.insert(0, str(config_dir))
+    config = __import__(config_module)
+    
+    # 기본값 설정
+    default_home = Path.home()
+    
+    # config.py에서 값 가져오기
+    mat_type = getattr(config, 'MAT_TYPE', "model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0")
+    home_dir = getattr(config, 'HOME', default_home)
+    adda_bin = getattr(config, 'ADDA_BIN', home_dir / "adda" / "src")
+    dataset_dir = getattr(config, 'DATASET_DIR', home_dir / "dataset" / "adda")
+    research_base = getattr(config, 'RESEARCH_BASE_DIR', home_dir / "research" / "adda")
+    mpi_procs = getattr(config, 'MPI_PROCS', 40)
+    lambda_start = getattr(config, 'LAMBDA_START', 400)
+    lambda_end = getattr(config, 'LAMBDA_END', 1200)
+    lambda_step = getattr(config, 'LAMBDA_STEP', 10)
+    
+    # ADDA 파라미터 가져오기
+    adda_params = getattr(config, 'ADDA_PARAMS', {})
+    size = adda_params.get('size', 0.097)
+    eps = adda_params.get('eps', 5)
+    maxiter = adda_params.get('maxiter', 10000000)
+    
+    # bash에서 사용할 수 있는 형태로 출력
+    print(f'MAT_TYPE="{mat_type}"')
+    print(f'ADDA_BIN_PATH="{adda_bin}"')
+    print(f'DATASET_BASE="{dataset_dir}"')
+    print(f'RESEARCH_BASE="{research_base}"')
+    print(f'MPI_PROCESSES={mpi_procs}')
+    print(f'LAMBDA_START={lambda_start}')
+    print(f'LAMBDA_END={lambda_end}')
+    print(f'LAMBDA_STEP={lambda_step}')
+    print(f'ADDA_SIZE={size}')
+    print(f'ADDA_EPS={eps}')
+    print(f'ADDA_MAXITER={maxiter}')
+    
+except Exception as e:
+    print(f'echo "ERROR: Failed to load config: {e}"; exit 1')
+EOF
+)
 
-# 굴절률 데이터 파일 경로
-n_100_FILE=$HOME/dataset/adda/refrac/n_100.txt
-k_100_FILE=$HOME/dataset/adda/refrac/k_100.txt
-n_015_FILE=$HOME/dataset/adda/refrac/n_015.txt
-k_015_FILE=$HOME/dataset/adda/refrac/k_015.txt
-n_000_FILE=$HOME/dataset/adda/refrac/n_000.txt
-k_000_FILE=$HOME/dataset/adda/refrac/k_000.txt
+# Python에서 가져온 설정값들을 bash 변수로 설정
+eval "$CONFIG_VALUES"
+
+# 설정값 확인
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to extract configuration values"
+    exit 1
+fi
+
+echo "✅ Configuration loaded successfully:"
+echo "   📁 MAT_TYPE: $MAT_TYPE"
+echo "   🔧 ADDA_BIN: $ADDA_BIN_PATH" 
+echo "   📊 DATASET_DIR: $DATASET_BASE"
+echo "   📈 RESEARCH_DIR: $RESEARCH_BASE"
+echo "   ⚡ MPI_PROCESSES: $MPI_PROCESSES"
+echo "   🌊 Wavelength range: $LAMBDA_START-$LAMBDA_END nm (step: $LAMBDA_STEP)"
+echo ""
+
+# 실제 경로 설정
+ADDA_BIN=$ADDA_BIN_PATH
+MY_DATA=$DATASET_BASE/str/${MAT_TYPE}.shape
+RESULT_BASE_DIR1=$RESEARCH_BASE/$MAT_TYPE
+
+echo "📁 File paths (from config: $CONFIG_FILE):"
+echo "   🧬 Shape file: $MY_DATA"
+echo "   📈 Results dir: $RESULT_BASE_DIR1"
+echo ""
+
+# 필수 파일들 존재 확인
+echo "🔍 Checking required files..."
+if [ ! -f "$MY_DATA" ]; then
+    echo "ERROR: Shape file not found: $MY_DATA"
+    exit 1
+fi
+
+if [ ! -f "$ADDA_BIN/mpi/adda_mpi" ]; then
+    echo "ERROR: ADDA binary not found: $ADDA_BIN/mpi/adda_mpi"
+    exit 1
+fi
+
+echo "✅ All required files found!"
+echo ""
 
 # 기본 결과 디렉토리 생성
 mkdir -p $RESULT_BASE_DIR1
-
-# 굴절률 데이터를 dictionary로 로드하는 함수
-load_refractive_data() {
-    local file=$1
-    local -n dict_ref=$2
-    
-    echo "Loading data from $file..."
-    if [ ! -f "$file" ]; then
-        echo "ERROR: Refractive index file not found: $file"
-        return 1
-    fi
-    
-    while IFS=$'\t' read -r wavelength value; do
-        # 파장을 정수로 변환하여 dictionary key로 사용
-        wavelength_int=$(echo "$wavelength" | cut -d'.' -f1)
-        dict_ref[$wavelength_int]=$value
-    done < "$file"
-    
-    echo "  Loaded ${#dict_ref[@]} data points"
-}
-
-# Associative arrays (dictionary) 선언
-declare -A n_100
-declare -A k_100
-declare -A n_015
-declare -A k_015
-declare -A n_000
-declare -A k_000
-
-# 각 파일에서 굴절률 데이터 로드
-echo "Loading refractive index data..."
-load_refractive_data "$n_100_FILE" n_100 || exit 1
-load_refractive_data "$k_100_FILE" k_100 || exit 1
-load_refractive_data "$n_015_FILE" n_015 || exit 1
-load_refractive_data "$k_015_FILE" k_015 || exit 1
-load_refractive_data "$n_000_FILE" n_000 || exit 1
-load_refractive_data "$k_000_FILE" k_000 || exit 1
-
-echo "✅ Refractive index data loaded successfully!"
-echo ""
 
 # 시뮬레이션 상태 추적 파일
 COMPLETED_FILE="$RESULT_BASE_DIR1/completed_simulations.txt"
@@ -100,12 +145,68 @@ mark_simulation_failed() {
     echo "$lambda" >> "$FAILED_FILE"
 }
 
+# config.py에서 특정 파장의 굴절률 가져오는 함수
+get_refractive_indices() {
+    local wavelength=$1
+    python << EOF
+import sys
+from pathlib import Path
+
+# config 파일 동적 로드
+config_path = Path("$CONFIG_FILE").resolve()
+config_dir = config_path.parent
+config_module = config_path.stem
+
+sys.path.insert(0, str(config_dir))
+config = __import__(config_module)
+
+try:
+    # 굴절률 파일들 정보 가져오기
+    refrac_files = getattr(config, 'REFRACTIVE_INDEX_FILES', {})
+    
+    # 각 파일에서 해당 파장의 값 읽기
+    wavelength = $wavelength
+    values = {}
+    
+    for key, file_path in refrac_files.items():
+        try:
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            wl = float(parts[0])
+                            val = float(parts[1])
+                            if abs(wl - wavelength) < 0.5:  # 파장 매칭 (±0.5nm 허용)
+                                values[key] = val
+                                break
+        except Exception as e:
+            print(f"# ERROR reading {key}: {e}", file=sys.stderr)
+            continue
+    
+    # 필요한 값들이 모두 있는지 확인
+    required_keys = ['n_100', 'k_100']
+    if all(key in values for key in required_keys):
+        print(f"n_100={values['n_100']}")
+        print(f"k_100={values['k_100']}")
+        print("SUCCESS=1")
+    else:
+        print("SUCCESS=0")
+        
+except Exception as e:
+    print(f"# ERROR: {e}", file=sys.stderr)
+    print("SUCCESS=0")
+EOF
+}
+
 echo "🚀 Starting ADDA simulations..."
 echo "📁 Results will be saved to: $RESULT_BASE_DIR1"
+echo "⚡ Using $MPI_PROCESSES MPI processes"
 echo ""
 
 # 파장별 시뮬레이션 루프
-for LAMBDA in $(seq 400 10 1200); do
+for LAMBDA in $(seq $LAMBDA_START $LAMBDA_STEP $LAMBDA_END); do
     echo "⚡ Processing lambda = $LAMBDA nm..."
     
     # 이미 완료된 시뮬레이션인지 확인
@@ -114,45 +215,38 @@ for LAMBDA in $(seq 400 10 1200); do
         continue
     fi
     
-    # 해당 파장의 굴절률 값 가져오기
-    if [[ -n "${n_100[$LAMBDA]}" && -n "${k_100[$LAMBDA]}" && \
-          -n "${n_015[$LAMBDA]}" && -n "${k_015[$LAMBDA]}" && \
-          -n "${n_000[$LAMBDA]}" && -n "${k_000[$LAMBDA]}" ]]; then
-
-        n_100_VAL=${n_100[$LAMBDA]}
-        k_100_VAL=${k_100[$LAMBDA]}
-        n_015_VAL=${n_015[$LAMBDA]}
-        k_015_VAL=${k_015[$LAMBDA]}
-        n_000_VAL=${n_000[$LAMBDA]}
-        k_000_VAL=${k_000[$LAMBDA]}
-
-        echo "  📊 Refractive indices for $LAMBDA nm:"
-        echo "     n_100: $n_100_VAL, k_100: $k_100_VAL"
-        echo "     n_015: $n_015_VAL, k_015: $k_015_VAL"
-        echo "     n_000: $n_000_VAL, k_000: $k_000_VAL"
-        
-        # 각 파장별로 별도 디렉토리 이름 생성
-        LAMBDA_DIR="lambda_${LAMBDA}nm"
-        LAMBDA_PATH="$RESULT_BASE_DIR1/$LAMBDA_DIR"
-        
-        # 이미 결과가 있는지 확인
-        if [ -f "$LAMBDA_PATH/CrossSec-X" ] || [ -f "$LAMBDA_PATH/CrossSec-Y" ]; then
-            echo "  ✅ Results already exist, skipping simulation..."
-            mark_simulation_completed $LAMBDA
-            continue
-        fi
+    # 각 파장별로 별도 디렉토리 이름 생성
+    LAMBDA_DIR="lambda_${LAMBDA}nm"
+    LAMBDA_PATH="$RESULT_BASE_DIR1/$LAMBDA_DIR"
+    
+    # 이미 결과가 있는지 확인
+    if [ -f "$LAMBDA_PATH/CrossSec-X" ] || [ -f "$LAMBDA_PATH/CrossSec-Y" ]; then
+        echo "  ✅ Results already exist, skipping simulation..."
+        mark_simulation_completed $LAMBDA
+        continue
+    fi
+    
+    # config.py에서 해당 파장의 굴절률 값 가져오기
+    echo "  📊 Getting refractive indices for $LAMBDA nm from config..."
+    REFRAC_VALUES=$(get_refractive_indices $LAMBDA)
+    
+    # 굴절률 값들을 bash 변수로 설정
+    eval "$REFRAC_VALUES"
+    
+    if [ "$SUCCESS" = "1" ]; then
+        echo "     n_100: $n_100, k_100: $k_100"
         
         # ADDA 시뮬레이션 실행
         echo "  🔄 Running ADDA simulation..."
-        $MPI_EXEC 40 $ADDA_BIN/mpi/adda_mpi \
+        $MPI_EXEC $MPI_PROCESSES $ADDA_BIN/mpi/adda_mpi \
             -shape read $MY_DATA \
             -pol ldr \
             -lambda $(echo "scale=3; $LAMBDA/1000" | bc) \
-            -m $n_100_VAL $k_100_VAL \
-            -maxiter 10000000 \
+            -m $n_100 $k_100 \
+            -maxiter $ADDA_MAXITER \
             -dir $LAMBDA_PATH \
-            -eps 5 \
-            -size 0.097 \
+            -eps $ADDA_EPS \
+            -size $ADDA_SIZE \
             -store_dip_pol \
             -store_int_field
         
@@ -172,8 +266,7 @@ for LAMBDA in $(seq 400 10 1200); do
         fi
         
     else
-        echo "  ❌ ERROR: Refractive index data not found for lambda = $LAMBDA nm"
-        echo "     Available wavelengths in data: ${!n_100[@]}"
+        echo "  ❌ ERROR: Refractive index data not found for lambda = $LAMBDA nm in config files"
         mark_simulation_failed $LAMBDA
     fi
     
@@ -184,7 +277,7 @@ echo "🎉 All simulations completed!"
 echo ""
 
 # 결과 요약 출력
-TOTAL_SIMS=$(seq 400 10 1200 | wc -l)
+TOTAL_SIMS=$(seq $LAMBDA_START $LAMBDA_STEP $LAMBDA_END | wc -l)
 COMPLETED_SIMS=0
 FAILED_SIMS=0
 
@@ -209,4 +302,4 @@ if [ -f "$FAILED_FILE" ]; then
     echo "  • Failed simulations log: $FAILED_FILE"
 fi
 echo ""
-echo "➡️  Next step: Run 'python3 process_result.py' for post-processing"
+echo "➡️  Next step: Run 'python process_result.py' for post-processing"

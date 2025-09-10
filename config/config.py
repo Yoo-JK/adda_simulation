@@ -8,11 +8,14 @@ from pathlib import Path
 HOME = Path.home()
 RESEARCH_BASE_DIR = HOME / "research" / "adda"
 
-# 시뮬레이션 설정
+# 시뮬레이션 모델 설정
+MAT_TYPE = "model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0"
+
+# ADDA 관련 경로
 ADDA_BIN = HOME / "adda" / "src"
 DATASET_DIR = HOME / "dataset" / "adda"
 
-# 굴절률 파일들 (시뮬레이션 단계에서 사용)
+# 굴절률 파일들
 REFRAC_DIR = DATASET_DIR / "refrac"
 REFRACTIVE_INDEX_FILES = {
     'n_100': REFRAC_DIR / "n_100.txt",
