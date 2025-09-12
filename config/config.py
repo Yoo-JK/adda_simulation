@@ -9,7 +9,7 @@ HOME = Path.home()
 RESEARCH_BASE_DIR = HOME / "research" / "adda"
 
 # 시뮬레이션 모델 설정
-MAT_TYPE = "model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0"
+MAT_TYPE = "model_Au47.0_Ag0.0_AgCl0.0_gap3.0"
 
 # ADDA 관련 경로
 ADDA_BIN = HOME / "adda" / "src"
@@ -38,6 +38,10 @@ ADDA_PARAMS = {
     'eps': 5,
     'maxiter': 10000000,
     'pol': 'ldr',
+    'refractive_index_sets': [
+        ['n_100', 'k_100'],
+        ['n_000', 'k_000']
+    ],
     'store_dip_pol': True,
     'store_int_field': True
 }

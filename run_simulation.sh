@@ -59,6 +59,10 @@ try:
     eps = adda_params.get('eps', 5)
     maxiter = adda_params.get('maxiter', 10000000)
     
+    # 굴절률 세트 정보
+    refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
+    refrac_sets_str = ';'.join([','.join(pair) for pair in refrac_sets])
+    
     # bash에서 사용할 수 있는 형태로 출력
     print(f'MAT_TYPE="{mat_type}"')
     print(f'ADDA_BIN_PATH="{adda_bin}"')
@@ -71,6 +75,7 @@ try:
     print(f'ADDA_SIZE={size}')
     print(f'ADDA_EPS={eps}')
     print(f'ADDA_MAXITER={maxiter}')
+    print(f'REFRAC_SETS="{refrac_sets_str}"')
     
 except Exception as e:
     print(f'echo "ERROR: Failed to load config: {e}"; exit 1')
@@ -93,6 +98,7 @@ echo "   📊 DATASET_DIR: $DATASET_BASE"
 echo "   📈 RESEARCH_DIR: $RESEARCH_BASE"
 echo "   ⚡ MPI_PROCESSES: $MPI_PROCESSES"
 echo "   🌊 Wavelength range: $LAMBDA_START-$LAMBDA_END nm (step: $LAMBDA_STEP)"
+echo "   🔬 Refractive index sets: $REFRAC_SETS"
 echo ""
 
 # 실제 경로 설정
@@ -145,8 +151,8 @@ mark_simulation_failed() {
     echo "$lambda" >> "$FAILED_FILE"
 }
 
-# config.py에서 특정 파장의 굴절률 가져오는 함수
-get_refractive_indices() {
+# config.py에서 특정 파장의 모든 굴절률 세트 가져오는 함수
+get_all_refractive_indices() {
     local wavelength=$1
     python << EOF
 import sys
@@ -161,35 +167,72 @@ sys.path.insert(0, str(config_dir))
 config = __import__(config_module)
 
 try:
+    wavelength = $wavelength
+    
+    # ADDA_PARAMS에서 굴절률 세트들 가져오기
+    adda_params = getattr(config, 'ADDA_PARAMS', {})
+    refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
+    
     # 굴절률 파일들 정보 가져오기
     refrac_files = getattr(config, 'REFRACTIVE_INDEX_FILES', {})
     
-    # 각 파일에서 해당 파장의 값 읽기
-    wavelength = $wavelength
-    values = {}
+    # 모든 굴절률 값들을 순서대로 수집
+    all_values = []
+    success = True
     
-    for key, file_path in refrac_files.items():
-        try:
-            with open(file_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            wl = float(parts[0])
-                            val = float(parts[1])
-                            if abs(wl - wavelength) < 0.5:  # 파장 매칭 (±0.5nm 허용)
-                                values[key] = val
-                                break
-        except Exception as e:
-            print(f"# ERROR reading {key}: {e}", file=sys.stderr)
-            continue
+    for n_key, k_key in refrac_sets:
+        n_val = None
+        k_val = None
+        
+        # n 값 읽기
+        if n_key in refrac_files:
+            try:
+                with open(refrac_files[n_key], 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                wl = float(parts[0])
+                                val = float(parts[1])
+                                if abs(wl - wavelength) < 0.5:  # 파장 매칭
+                                    n_val = val
+                                    break
+            except Exception as e:
+                print(f"# ERROR reading {n_key}: {e}", file=sys.stderr)
+                success = False
+                break
+        
+        # k 값 읽기
+        if k_key in refrac_files:
+            try:
+                with open(refrac_files[k_key], 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                wl = float(parts[0])
+                                val = float(parts[1])
+                                if abs(wl - wavelength) < 0.5:  # 파장 매칭
+                                    k_val = val
+                                    break
+            except Exception as e:
+                print(f"# ERROR reading {k_key}: {e}", file=sys.stderr)
+                success = False
+                break
+        
+        if n_val is not None and k_val is not None:
+            all_values.extend([n_val, k_val])
+        else:
+            print(f"# ERROR: Values not found for {n_key}, {k_key} at wavelength {wavelength}", file=sys.stderr)
+            success = False
+            break
     
-    # 필요한 값들이 모두 있는지 확인
-    required_keys = ['n_100', 'k_100']
-    if all(key in values for key in required_keys):
-        print(f"n_100={values['n_100']}")
-        print(f"k_100={values['k_100']}")
+    if success and len(all_values) > 0:
+        # 모든 값들을 공백으로 구분된 문자열로 출력
+        values_str = ' '.join(map(str, all_values))
+        print(f"REFRAC_VALUES=\"{values_str}\"")
         print("SUCCESS=1")
     else:
         print("SUCCESS=0")
@@ -226,15 +269,15 @@ for LAMBDA in $(seq $LAMBDA_START $LAMBDA_STEP $LAMBDA_END); do
         continue
     fi
     
-    # config.py에서 해당 파장의 굴절률 값 가져오기
-    echo "  📊 Getting refractive indices for $LAMBDA nm from config..."
-    REFRAC_VALUES=$(get_refractive_indices $LAMBDA)
+    # config.py에서 해당 파장의 모든 굴절률 값 가져오기
+    echo "  📊 Getting all refractive indices for $LAMBDA nm from config..."
+    REFRAC_RESULT=$(get_all_refractive_indices $LAMBDA)
     
     # 굴절률 값들을 bash 변수로 설정
-    eval "$REFRAC_VALUES"
+    eval "$REFRAC_RESULT"
     
     if [ "$SUCCESS" = "1" ]; then
-        echo "     n_100: $n_100, k_100: $k_100"
+        echo "     Refractive indices: $REFRAC_VALUES"
         
         # ADDA 시뮬레이션 실행
         echo "  🔄 Running ADDA simulation..."
@@ -242,7 +285,7 @@ for LAMBDA in $(seq $LAMBDA_START $LAMBDA_STEP $LAMBDA_END); do
             -shape read $MY_DATA \
             -pol ldr \
             -lambda $(echo "scale=3; $LAMBDA/1000" | bc) \
-            -m $n_100 $k_100 \
+            -m $REFRAC_VALUES \
             -maxiter $ADDA_MAXITER \
             -dir $LAMBDA_PATH \
             -eps $ADDA_EPS \
