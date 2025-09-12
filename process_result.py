@@ -1,22 +1,32 @@
 #!/usr/bin/env python
 """
-ADDA 후처리 메인 스크립트 - 최종 버전
+ADDA 후처리 메인 스크립트 - config.py 기반 버전
 process_result.py
 
+config.py의 MAT_TYPE을 사용하여 특정 모델만 분석
+
 실제 사용법:
-    python process_result.py                    # 모든 모델 분석
-    python process_result.py --model MODEL     # 특정 모델만 분석
-    python process_result.py --show-plots      # 플롯 화면에 표시
-    python process_result.py --verbose         # 상세 로그
+    python process_result.py                              # config.py의 MAT_TYPE 모델 분석
+    python process_result.py --config custom_config.py   # 사용자 정의 config 사용
+    python process_result.py --model MODEL               # 특정 모델만 분석 (기존 방식)
+    python process_result.py --all-models               # 모든 model_* 분석 (기존 방식)
+    python process_result.py --show-plots               # 플롯 화면에 표시
+    python process_result.py --verbose                  # 상세 로그
 """
 import argparse
 import sys
 import logging
+import os
 from pathlib import Path
 
 # postprocess 모듈 import
 try:
-    from postprocess import analyze_model, analyze_all_models
+    from postprocess import (
+        analyze_model_from_config,
+        analyze_all_models_from_config,
+        analyze_model,
+        analyze_all_models
+    )
 except ImportError as e:
     print(f"Import error: {e}")
     print("Please ensure postprocess/postprocess.py exists")
@@ -36,30 +46,42 @@ def setup_logging(verbose: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ADDA 후처리 - 실제 데이터 기반',
+        description='ADDA 후처리 - config.py 기반 (MAT_TYPE 사용)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python process_result.py
-    → ~/research/adda 내 모든 model_* 폴더 분석
+    → config.py의 MAT_TYPE에 해당하는 모델 분석
+    
+  python process_result.py --config ./config/custom.py
+    → 사용자 정의 config 파일 사용
     
   python process_result.py --model model_000_Au47.0_Ag0.0_AgCl0.0_gap3.0
-    → 특정 모델만 분석
+    → 특정 모델만 분석 (기존 방식)
+    
+  python process_result.py --all-models --base-dir ~/research/adda
+    → 해당 경로의 모든 model_* 폴더 분석 (기존 방식)
     
   python process_result.py --show-plots
-    → 플롯을 화면에도 표시 (저장 + 화면 표시)
-    
-  python process_result.py --base-dir /custom/path
-    → 다른 경로의 결과 분석
+    → config.py 기반 + 플롯을 화면에도 표시 (저장 + 화면 표시)
         """
     )
     
-    parser.add_argument('--base-dir', type=str, default='~/research/adda',
-                       help='ADDA 결과 기본 디렉토리 (기본값: ~/research/adda)')
+    # Config 관련 옵션
+    parser.add_argument('--config', type=str, default='./config/config.py',
+                       help='Config 파일 경로 (기본값: ./config/config.py)')
+    
+    # 기존 호환성을 위한 옵션들
+    parser.add_argument('--base-dir', type=str, 
+                       help='ADDA 결과 기본 디렉토리 (기존 방식용)')
     parser.add_argument('--model', type=str,
-                       help='분석할 특정 모델명')
+                       help='분석할 특정 모델명 (기존 방식용)')
+    parser.add_argument('--all-models', action='store_true',
+                       help='모든 model_* 디렉토리 분석 (기존 방식)')
+    
+    # 공통 옵션들
     parser.add_argument('--output-dir', type=str,
-                       help='결과 저장 디렉토리 (기본값: base-dir과 동일)')
+                       help='결과 저장 디렉토리')
     parser.add_argument('--show-plots', action='store_true',
                        help='플롯을 화면에 표시 (저장도 함께)')
     parser.add_argument('--verbose', action='store_true',
@@ -71,40 +93,34 @@ Examples:
     setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
     
-    # 경로 설정
-    base_dir = Path(args.base_dir).expanduser()
-    if not base_dir.exists():
-        logger.error(f"Base directory not found: {base_dir}")
-        print(f"Please check if {base_dir} exists")
+    # config 파일 환경변수에서 가져오기 (master.sh에서 설정)
+    if not args.config and 'ADDA_CONFIG_FILE' in os.environ:
+        args.config = os.environ['ADDA_CONFIG_FILE']
+        logger.info(f"Using config from environment: {args.config}")
+    
+    # Config 파일 존재 확인
+    config_path = Path(args.config)
+    if not config_path.exists():
+        logger.error(f"Config file not found: {config_path}")
         sys.exit(1)
     
-    output_dir = Path(args.output_dir).expanduser() if args.output_dir else base_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    logger.info(f"Base directory: {base_dir}")
-    logger.info(f"Output directory: {output_dir}")
-    
     try:
-        if args.model:
-            # 특정 모델만 분석
-            model_dir = base_dir / args.model
-            if not model_dir.exists():
-                logger.error(f"Model directory not found: {model_dir}")
-                print(f"Available models in {base_dir}:")
-                for item in base_dir.iterdir():
-                    if item.is_dir() and item.name.startswith('model_'):
-                        print(f"  {item.name}")
+        # 모드 결정: 기존 방식 vs config 기반
+        if args.all_models:
+            # 기존 방식: 모든 model_* 분석
+            if not args.base_dir:
+                logger.error("--base-dir required when using --all-models")
                 sys.exit(1)
             
-            logger.info(f"Analyzing single model: {args.model}")
-            analyzer = analyze_model(model_dir, output_dir, args.show_plots)
+            base_dir = Path(args.base_dir).expanduser()
+            if not base_dir.exists():
+                logger.error(f"Base directory not found: {base_dir}")
+                sys.exit(1)
             
-            print(f"\n🎉 Analysis complete for {args.model}")
-            print(f"📊 Results saved to: {output_dir}")
+            output_dir = Path(args.output_dir).expanduser() if args.output_dir else base_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
             
-        else:
-            # 모든 모델 분석
-            logger.info("Analyzing all models...")
+            logger.info(f"Using legacy mode: analyzing all model_* in {base_dir}")
             
             # 사용 가능한 모델들 확인
             model_dirs = [item for item in base_dir.iterdir() 
@@ -123,7 +139,7 @@ Examples:
             results = analyze_all_models(base_dir, output_dir, args.show_plots)
             
             print(f"\n{'='*60}")
-            print("🎉 ANALYSIS COMPLETE")
+            print("🎉 ANALYSIS COMPLETE (Legacy Mode)")
             print(f"{'='*60}")
             print(f"Processed {len(results)} models:")
             for model_name in sorted(results.keys()):
@@ -131,11 +147,64 @@ Examples:
                 data_points = len(analyzer.df) if analyzer.df is not None else 0
                 print(f"  ✅ {model_name} ({data_points} wavelengths)")
             print(f"\n📊 Results saved to: {output_dir}")
-            print(f"📈 Generated files:")
-            print(f"  • {model_name}_results.csv (data)")
-            print(f"  • {model_name}_optical_properties.png (plots)")
-            print(f"{'='*60}")
-    
+            
+        elif args.model:
+            # 기존 방식: 특정 모델 분석
+            if not args.base_dir:
+                logger.error("--base-dir required when using --model")
+                sys.exit(1)
+            
+            base_dir = Path(args.base_dir).expanduser()
+            model_dir = base_dir / args.model
+            
+            if not model_dir.exists():
+                logger.error(f"Model directory not found: {model_dir}")
+                print(f"Available models in {base_dir}:")
+                for item in base_dir.iterdir():
+                    if item.is_dir() and item.name.startswith('model_'):
+                        print(f"  {item.name}")
+                sys.exit(1)
+            
+            output_dir = Path(args.output_dir).expanduser() if args.output_dir else base_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Using legacy mode: analyzing single model {args.model}")
+            analyzer = analyze_model(model_dir, output_dir, args.show_plots)
+            
+            print(f"\n🎉 Analysis complete for {args.model}")
+            print(f"📊 Results saved to: {output_dir}")
+            
+        else:
+            # 새로운 방식: config.py 기반
+            logger.info(f"Using config-based mode with: {args.config}")
+            
+            # output_dir 설정 (config에서 RESEARCH_BASE_DIR 가져와서 기본값으로 사용)
+            output_dir = None
+            if args.output_dir:
+                output_dir = Path(args.output_dir).expanduser()
+                output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # config 기반 분석 실행
+            analyzer = analyze_model_from_config(
+                config_file=args.config,
+                output_dir=output_dir,
+                show_plots=args.show_plots
+            )
+            
+            # 결과 출력
+            print(f"\n🎉 ANALYSIS COMPLETE (Config-based)")
+            print(f"📋 Using config: {args.config}")
+            print(f"🔬 Analyzed model: {analyzer.mat_type}")
+            
+            data_points = len(analyzer.df) if analyzer.df is not None else 0
+            print(f"📈 Data points: {data_points} wavelengths")
+            
+            if output_dir:
+                print(f"📊 Results saved to: {output_dir}")
+                print(f"📈 Generated files:")
+                print(f"  • {analyzer.mat_type}_results.csv")
+                print(f"  • {analyzer.mat_type}_optical_properties.png")
+            
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         print(f"\n❌ Error: {e}")

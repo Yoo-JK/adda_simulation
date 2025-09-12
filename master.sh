@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# ADDA 시뮬레이션 마스터 제어 스크립트 - 최종 버전 v3.1
-# 깔끔한 구조: config/ + postprocess/ + 설정 파일 지정 가능
+# ADDA 시뮬레이션 마스터 제어 스크립트 - config 기반 후처리 버전
+# 깔끔한 구조: config/ + postprocess/ + config.py의 MAT_TYPE 사용
 
 set -e  # 오류 발생시 즉시 종료
 
@@ -45,7 +45,7 @@ print_header() {
     echo -e "${BLUE}"
     echo "=========================================================="
     echo "                ADDA Simulation Master Control"
-    echo "              Final Architecture Implementation"
+    echo "              Config-based Implementation"
     echo "=========================================================="
     echo -e "${NC}"
     echo "   Structure:"
@@ -54,8 +54,13 @@ print_header() {
     echo "   process_result.py       - 메인 후처리 스크립트"
     echo "   run_simulation.sh       - 시뮬레이션 전용"
     echo ""
+    echo "   🔧 Config-based processing:"
+    echo "   • Uses MAT_TYPE from config.py"
+    echo "   • No more scanning for model_* directories"
+    echo "   • Precise and consistent processing"
+    echo ""
     if [ -n "$CONFIG_FILE" ]; then
-        echo "🔧 Using config file: $CONFIG_FILE"
+        echo "📋 Using config file: $CONFIG_FILE"
         echo ""
     fi
 }
@@ -83,24 +88,26 @@ Usage: $0 [OPTIONS]
 OPTIONS:
     --config FILE           설정 파일 지정 (기본값: ./config/config.py)
     --sim-only              시뮬레이션만 실행
-    --process-only          후처리만 실행 (모든 모델)
-    --process-model MODEL   특정 모델만 후처리
+    --process-only          후처리만 실행 (config의 MAT_TYPE 기반)
+    --process-all           모든 model_* 후처리 (기존 방식)
+    --process-model MODEL   특정 모델만 후처리 (기존 방식)
     --check-status          시뮬레이션 상태 확인
     --resume                실패한 시뮬레이션 재실행
     --clean                 결과 디렉토리 정리
     -h, --help              도움말 출력
 
 Examples:
-    $0                                           # 전체 실행 (기본 config 사용)
+    $0                                           # 전체 실행 (config 기반)
     $0 --config ./config/custom.py              # 사용자 정의 config 사용
     $0 --config ./config/model_Au50.py --sim-only   # 특정 config로 시뮬레이션만
-    $0 --process-only                           # 모든 모델 후처리
-    $0 --process-model MODEL                    # 특정 모델만 후처리
+    $0 --process-only                           # config의 MAT_TYPE 모델만 후처리
+    $0 --process-all                           # 모든 model_* 후처리 (기존 방식)
+    $0 --process-model MODEL                    # 특정 모델만 후처리 (기존 방식)
     $0 --check-status                           # 상태 확인
 
-Target Graphs:
-    Extinction vs Wavelength
-    Absorption vs Wavelength  
+Target Analysis:
+    Extinction vs Wavelength (from config MAT_TYPE)
+    Absorption vs Wavelength
     Scattering vs Wavelength (= Extinction - Absorption)
 EOF
 }
@@ -204,7 +211,7 @@ check_dependencies() {
     fi
     
     # postprocess import 테스트  
-    if ! python -c "from postprocess import analyze_model" 2>/dev/null; then
+    if ! python -c "from postprocess import analyze_model_from_config" 2>/dev/null; then
         log_error "Postprocess import failed"
         log_info "Check postprocess/ structure"
         missing=1
@@ -271,14 +278,14 @@ run_simulations() {
     fi
 }
 
-# 후처리 실행 (모든 모델)
+# 후처리 실행 (config 기반 - MAT_TYPE 사용)
 run_postprocessing() {
-    log_step "Starting post-processing for all models..."
+    log_step "Starting post-processing for model specified in config..."
     
-    # config 파일에서 base_dir 가져오기
-    BASE_DIR=$(get_base_dir_from_config)
+    # config 파일을 환경변수로 전달하여 process_result.py에서 사용
+    export ADDA_CONFIG_FILE="$CONFIG_FILE"
     
-    if python process_result.py --base-dir "$BASE_DIR"; then
+    if python process_result.py --config "$CONFIG_FILE"; then
         log_success "Post-processing completed successfully"
         return 0
     else
@@ -287,15 +294,31 @@ run_postprocessing() {
     fi
 }
 
-# 특정 모델 후처리
-run_postprocessing_model() {
-    local model_name=$1
-    log_step "Starting post-processing for model: $model_name"
+# 모든 모델 후처리 (기존 방식)
+run_postprocessing_all() {
+    log_step "Starting post-processing for all models (legacy mode)..."
     
     # config 파일에서 base_dir 가져오기
     BASE_DIR=$(get_base_dir_from_config)
     
-    if python process_result.py --base-dir "$BASE_DIR" --model "$model_name"; then
+    if python process_result.py --all-models --base-dir "$BASE_DIR"; then
+        log_success "Post-processing completed for all models"
+        return 0
+    else
+        log_error "Post-processing failed"
+        return 1
+    fi
+}
+
+# 특정 모델 후처리 (기존 방식)
+run_postprocessing_model() {
+    local model_name=$1
+    log_step "Starting post-processing for model: $model_name (legacy mode)"
+    
+    # config 파일에서 base_dir 가져오기
+    BASE_DIR=$(get_base_dir_from_config)
+    
+    if python process_result.py --model "$model_name" --base-dir "$BASE_DIR"; then
         log_success "Post-processing completed for $model_name"
         return 0
     else
@@ -325,21 +348,62 @@ except Exception as e:
 EOF
 }
 
+# config에서 MAT_TYPE 가져오기
+get_mat_type_from_config() {
+    python << EOF
+import sys
+from pathlib import Path
+
+# config 파일 경로를 Python path에 추가
+config_path = Path("$CONFIG_FILE").resolve()
+config_dir = config_path.parent
+config_module = config_path.stem
+
+sys.path.insert(0, str(config_dir))
+
+try:
+    config = __import__(config_module)
+    print(config.MAT_TYPE)
+except Exception as e:
+    print("model_Au47.0_Ag0.0_AgCl0.0_gap3.0")  # fallback
+EOF
+}
+
 # 상태 확인
 check_status() {
     log_step "Checking simulation status..."
     
     # config 파일에서 결과 디렉토리 가져오기
     RESEARCH_DIR=$(get_base_dir_from_config)
+    MAT_TYPE=$(get_mat_type_from_config)
+    
+    echo ""
+    echo "📋 Config file: $CONFIG_FILE"
+    echo "🔬 MAT_TYPE: $MAT_TYPE"
+    echo "📁 Research directory: $RESEARCH_DIR"
+    echo ""
     
     if [ -d "$RESEARCH_DIR" ]; then
+        # config 기반 모델 확인
+        MODEL_DIR="$RESEARCH_DIR/$MAT_TYPE"
+        if [ -d "$MODEL_DIR" ]; then
+            lambda_count=$(find "$MODEL_DIR" -name "lambda_*nm" -type d 2>/dev/null | wc -l)
+            echo "✅ Found target model: $MAT_TYPE ($lambda_count wavelengths)"
+        else
+            echo "❌ Target model not found: $MAT_TYPE"
+        fi
+        
         echo ""
-        echo "📁 Found models in $RESEARCH_DIR:"
-        for model_dir in "$RESEARCH_DIR"/model_*; do
+        echo "📊 All models in research directory:"
+        for model_dir in "$RESEARCH_DIR"/*/; do
             if [ -d "$model_dir" ]; then
                 model_name=$(basename "$model_dir")
                 lambda_count=$(find "$model_dir" -name "lambda_*nm" -type d 2>/dev/null | wc -l)
-                echo "  📊 $model_name ($lambda_count wavelengths)"
+                if [ "$model_name" = "$MAT_TYPE" ]; then
+                    echo "  🎯 $model_name ($lambda_count wavelengths) <- TARGET"
+                else
+                    echo "  📁 $model_name ($lambda_count wavelengths)"
+                fi
             fi
         done
         echo ""
@@ -398,6 +462,12 @@ main() {
                 shift
                 break
                 ;;
+            --process-all)
+                check_dependencies
+                run_postprocessing_all
+                shift
+                break
+                ;;
             --process-model)
                 if [ -z "$2" ]; then
                     log_error "Model name required for --process-model"
@@ -431,13 +501,13 @@ main() {
                 exit 0
                 ;;
             "")
-                # 기본 동작: 전체 실행
-                log_step "Running full pipeline (simulation + post-processing)"
+                # 기본 동작: 전체 실행 (config 기반)
+                log_step "Running full pipeline (simulation + config-based post-processing)"
                 
                 check_dependencies
                 
                 if run_simulations; then
-                    log_step "Proceeding to post-processing..."
+                    log_step "Proceeding to config-based post-processing..."
                     run_postprocessing
                 else
                     log_error "Simulations failed. Skipping post-processing."
@@ -457,12 +527,12 @@ main() {
     
     # 인수가 없는 경우 기본 동작
     if [ $# -eq 0 ]; then
-        log_step "Running full pipeline (simulation + post-processing)"
+        log_step "Running full pipeline (simulation + config-based post-processing)"
         
         check_dependencies
         
         if run_simulations; then
-            log_step "Proceeding to post-processing..."
+            log_step "Proceeding to config-based post-processing..."
             run_postprocessing
         else
             log_error "Simulations failed. Skipping post-processing."
