@@ -180,52 +180,75 @@ try:
     all_values = []
     success = True
     
-    for n_key, k_key in refrac_sets:
-        n_val = None
-        k_val = None
-        
-        # n 값 읽기
-        if n_key in refrac_files:
-            try:
-                with open(refrac_files[n_key], 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                wl = float(parts[0])
-                                val = float(parts[1])
-                                if abs(wl - wavelength) < 0.5:  # 파장 매칭
-                                    n_val = val
-                                    break
-            except Exception as e:
-                print(f"# ERROR reading {n_key}: {e}", file=sys.stderr)
+    for item in refrac_sets:
+        # 상수값인지 파일키인지 판단
+        if isinstance(item, list) and len(item) == 2:
+            n_item, k_item = item
+            
+            # 둘 다 숫자면 상수값
+            if isinstance(n_item, (int, float)) and isinstance(k_item, (int, float)):
+                n_val = float(n_item)
+                k_val = float(k_item)
+                all_values.extend([n_val, k_val])
+                continue
+            
+            # 둘 다 문자열이면 파일키
+            elif isinstance(n_item, str) and isinstance(k_item, str):
+                n_key = n_item
+                k_key = k_item
+                n_val = None
+                k_val = None
+                
+                # n 값 읽기
+                if n_key in refrac_files:
+                    try:
+                        with open(refrac_files[n_key], 'r') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    parts = line.split()
+                                    if len(parts) >= 2:
+                                        wl = float(parts[0])
+                                        val = float(parts[1])
+                                        if abs(wl - wavelength) < 0.5:  # 파장 매칭
+                                            n_val = val
+                                            break
+                    except Exception as e:
+                        print(f"# ERROR reading {n_key}: {e}", file=sys.stderr)
+                        success = False
+                        break
+                
+                # k 값 읽기
+                if k_key in refrac_files:
+                    try:
+                        with open(refrac_files[k_key], 'r') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    parts = line.split()
+                                    if len(parts) >= 2:
+                                        wl = float(parts[0])
+                                        val = float(parts[1])
+                                        if abs(wl - wavelength) < 0.5:  # 파장 매칭
+                                            k_val = val
+                                            break
+                    except Exception as e:
+                        print(f"# ERROR reading {k_key}: {e}", file=sys.stderr)
+                        success = False
+                        break
+                
+                if n_val is not None and k_val is not None:
+                    all_values.extend([n_val, k_val])
+                else:
+                    print(f"# ERROR: Values not found for {n_key}, {k_key} at wavelength {wavelength}", file=sys.stderr)
+                    success = False
+                    break
+            else:
+                print(f"# ERROR: Invalid refractive index set format: {item}", file=sys.stderr)
                 success = False
                 break
-        
-        # k 값 읽기
-        if k_key in refrac_files:
-            try:
-                with open(refrac_files[k_key], 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                wl = float(parts[0])
-                                val = float(parts[1])
-                                if abs(wl - wavelength) < 0.5:  # 파장 매칭
-                                    k_val = val
-                                    break
-            except Exception as e:
-                print(f"# ERROR reading {k_key}: {e}", file=sys.stderr)
-                success = False
-                break
-        
-        if n_val is not None and k_val is not None:
-            all_values.extend([n_val, k_val])
         else:
-            print(f"# ERROR: Values not found for {n_key}, {k_key} at wavelength {wavelength}", file=sys.stderr)
+            print(f"# ERROR: Invalid refractive index set format: {item}", file=sys.stderr)
             success = False
             break
     
