@@ -61,7 +61,7 @@ try:
     
     # 굴절률 세트 정보
     refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
-    refrac_sets_str = ';'.join([','.join(pair) for pair in refrac_sets])
+    refrac_sets_str = ';'.join([','.join(map(str, pair)) for pair in refrac_sets])
     
     # bash에서 사용할 수 있는 형태로 출력
     print(f'MAT_TYPE="{mat_type}"')
