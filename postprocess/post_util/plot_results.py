@@ -15,6 +15,8 @@ class ADDAPlotter:
     def __init__(self, df: pd.DataFrame, model_name: str):
         self.df = df
         self.model_name = model_name
+        # 파일명에서 슬래시를 언더스코어로 변경 (파일시스템 호환성)
+        self.safe_model_name = model_name.replace('/', '_')
     
     def plot_optical_properties(self, output_dir: Path = None, show: bool = True):
         """광학 특성 플롯 - 스펙트럼 통합 버전"""
@@ -83,7 +85,7 @@ class ADDAPlotter:
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            plot_file = output_dir / f"{self.model_name}_optical_properties.png"
+            plot_file = output_dir / f"{self.safe_model_name}_optical_properties.png"
             plt.savefig(plot_file, dpi=300, bbox_inches='tight', facecolor='white')
             logger.info(f"Plot saved to {plot_file}")
             
@@ -128,7 +130,7 @@ class ADDAPlotter:
         
         plt.tight_layout()
         
-        spectrum_file = output_dir / f"{self.model_name}_spectrum_only.png"
+        spectrum_file = output_dir / f"{self.safe_model_name}_spectrum_only.png"
         plt.savefig(spectrum_file, dpi=300, bbox_inches='tight', facecolor='white')
         logger.info(f"Spectrum-only plot saved to {spectrum_file}")
         plt.close()

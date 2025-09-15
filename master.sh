@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# ADDA 시뮬레이션 마스터 제어 스크립트 - config 기반 후처리 버전
-# 깔끔한 구조: config/ + postprocess/ + config.py의 MAT_TYPE 사용
+# ADDA 시뮬레이션 마스터 제어 스크립트 - Shape 옵션 지원 버전
+# 깔끔한 구조: config/ + postprocess/ + config.py의 MAT_TYPE + SHAPE_CONFIG 사용
 
 set -e  # 오류 발생시 즉시 종료
 
@@ -44,23 +44,24 @@ START_TIME=$(date +%s)
 print_header() {
     echo -e "${BLUE}"
     echo "=========================================================="
-    echo "                ADDA Simulation Master Control"
-    echo "              Config-based Implementation"
+    echo "          ADDA Simulation Master Control v2.0"
+    echo "          Config-based + Shape Support"
     echo "=========================================================="
     echo -e "${NC}"
     echo "   Structure:"
-    echo "   config/config.py        - 모든 설정 관리"
+    echo "   config/config.py        - 모든 설정 관리 (형상 포함)"
     echo "   postprocess/            - 후처리 패키지"  
     echo "   process_result.py       - 메인 후처리 스크립트"
-    echo "   run_simulation.sh       - 시뮬레이션 전용"
+    echo "   run_simulation.sh       - 시뮬레이션 전용 (Shape 지원)"
     echo ""
-    echo "   🔧 Config-based processing:"
+    echo "   Enhanced Features:"
+    echo "   • Shape configuration support"
+    echo "   • sphere, ellipsoid, cylinder, box, coated, read"
     echo "   • Uses MAT_TYPE from config.py"
     echo "   • No more scanning for model_* directories"
-    echo "   • Precise and consistent processing"
     echo ""
     if [ -n "$CONFIG_FILE" ]; then
-        echo "📋 Using config file: $CONFIG_FILE"
+        echo "[CONFIG] Using config file: $CONFIG_FILE"
         echo ""
     fi
 }
@@ -91,7 +92,9 @@ OPTIONS:
     --process-only          후처리만 실행 (config의 MAT_TYPE 기반)
     --process-all           모든 model_* 후처리 (기존 방식)
     --process-model MODEL   특정 모델만 후처리 (기존 방식)
+    --refractive-test       굴절률 테스트 모드 (굴절률 이름을 폴더명으로 사용)
     --check-status          시뮬레이션 상태 확인
+    --check-shape           형상 설정 확인
     --resume                실패한 시뮬레이션 재실행
     --clean                 결과 디렉토리 정리
     -h, --help              도움말 출력
@@ -99,16 +102,25 @@ OPTIONS:
 Examples:
     $0                                           # 전체 실행 (config 기반)
     $0 --config ./config/custom.py              # 사용자 정의 config 사용
-    $0 --config ./config/model_Au50.py --sim-only   # 특정 config로 시뮬레이션만
+    $0 --config ./config/sphere.py --sim-only   # 특정 config로 시뮬레이션만
+    $0 --refractive-test                        # 굴절률 테스트 모드
+    $0 --refractive-test --sim-only             # 굴절률 테스트 시뮬레이션만
     $0 --process-only                           # config의 MAT_TYPE 모델만 후처리
-    $0 --process-all                           # 모든 model_* 후처리 (기존 방식)
-    $0 --process-model MODEL                    # 특정 모델만 후처리 (기존 방식)
+    $0 --check-shape                            # 현재 형상 설정 확인
     $0 --check-status                           # 상태 확인
 
-Target Analysis:
-    Extinction vs Wavelength (from config MAT_TYPE)
-    Absorption vs Wavelength
-    Scattering vs Wavelength (= Extinction - Absorption)
+Refractive Test Mode:
+    굴절률 테스트 모드에서는 config의 refractive_index_sets에서
+    굴절률 이름을 추출하여 폴더명으로 사용합니다.
+    예: ['n_johnson', 'k_johnson'] -> 'johnson' 폴더
+
+Supported Shapes:
+    sphere                   - 구형 (기본값)
+    ellipsoid y/x z/x       - 타원체
+    cylinder height/diameter - 원기둥/나노로드
+    box y/x z/x             - 직육면체
+    coated d_in/d           - 코어-쉘 구조
+    read filename           - 파일에서 읽기 (기존 방식)
 EOF
 }
 
@@ -244,7 +256,7 @@ try:
     config = __import__(config_module)
     
     # 필수 설정값 확인
-    required_attrs = ['RESEARCH_BASE_DIR', 'MAT_TYPE', 'ADDA_BIN', 'DATASET_DIR']
+    required_attrs = ['RESEARCH_BASE_DIR', 'ADDA_BIN', 'DATASET_DIR', 'SHAPE_CONFIG']
     for attr in required_attrs:
         if not hasattr(config, attr):
             print(f"Missing required configuration: {attr}")
@@ -256,6 +268,206 @@ except Exception as e:
     print(f"Config import failed: {e}")
     sys.exit(1)
 EOF
+}
+
+# 형상 설정 확인
+check_shape_config() {
+    log_step "Checking shape configuration..."
+    
+    # config 파일에서 형상 정보 가져오기
+    SHAPE_INFO=$(python << EOF
+import sys
+from pathlib import Path
+
+# config 파일 동적 로드
+config_path = Path("$CONFIG_FILE").resolve()
+config_dir = config_path.parent
+config_module = config_path.stem
+
+sys.path.insert(0, str(config_dir))
+
+try:
+    config = __import__(config_module)
+    
+    # Shape 설정 가져오기
+    shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
+    shape_type = shape_config.get('type', 'sphere')
+    shape_args = shape_config.get('args', [])
+    shape_filename = shape_config.get('filename', None)
+    
+    # MAT_TYPE 또는 자동 생성
+    mat_type = getattr(config, 'MAT_TYPE', 'auto')
+    
+    print(f"SHAPE_TYPE={shape_type}")
+    print(f"SHAPE_ARGS={' '.join(map(str, shape_args)) if shape_args else 'none'}")
+    print(f"SHAPE_FILENAME={shape_filename if shape_filename else 'none'}")
+    print(f"MAT_TYPE={mat_type}")
+    
+except Exception as e:
+    print(f"ERROR: {e}")
+EOF
+)
+    
+    # Shape 정보를 bash 변수로 설정
+    eval "$SHAPE_INFO"
+    
+    if [[ "$SHAPE_INFO" == *"ERROR:"* ]]; then
+        log_error "Failed to read shape configuration"
+        return 1
+    fi
+    
+    echo ""
+    echo "Current Shape Configuration:"
+    echo "   Model: $MAT_TYPE"
+    echo "   Shape Type: $SHAPE_TYPE"
+    
+    case "$SHAPE_TYPE" in
+        "sphere")
+            echo "   Parameters: Default sphere (no arguments needed)"
+            ;;
+        "ellipsoid")
+            if [ "$SHAPE_ARGS" != "none" ]; then
+                echo "   Parameters: $SHAPE_ARGS (y/x z/x ratios)"
+            else
+                log_error "ellipsoid requires 2 arguments (y/x, z/x)"
+                return 1
+            fi
+            ;;
+        "cylinder")
+            if [ "$SHAPE_ARGS" != "none" ]; then
+                echo "   Parameters: $SHAPE_ARGS (height/diameter ratio)"
+            else
+                log_error "cylinder requires 1 argument (height/diameter)"
+                return 1
+            fi
+            ;;
+        "box")
+            if [ "$SHAPE_ARGS" != "none" ]; then
+                echo "   Parameters: $SHAPE_ARGS (y/x z/x ratios)"
+            else
+                log_error "box requires 2 arguments (y/x, z/x)"
+                return 1
+            fi
+            ;;
+        "coated")
+            if [ "$SHAPE_ARGS" != "none" ]; then
+                echo "   Parameters: $SHAPE_ARGS (inner_diameter/outer_diameter ratio)"
+            else
+                log_error "coated requires 1 argument (d_in/d_out)"
+                return 1
+            fi
+            ;;
+        "read")
+            if [ "$SHAPE_FILENAME" != "none" ]; then
+                echo "   Shape File: $SHAPE_FILENAME"
+                if [ ! -f "$SHAPE_FILENAME" ]; then
+                    log_warning "Shape file not found: $SHAPE_FILENAME"
+                fi
+            else
+                log_error "read shape requires filename"
+                return 1
+            fi
+            ;;
+        *)
+            log_error "Unknown shape type: $SHAPE_TYPE"
+            return 1
+            ;;
+    esac
+    
+    echo ""
+    log_success "Shape configuration is valid"
+    return 0
+}
+
+# 굴절률 테스트 모드 실행 (단순한 방식)
+run_refractive_test() {
+    local sim_only=$1
+    
+    log_step "Starting refractive index test mode..."
+    log_info "Using current config's refractive_index_sets for folder naming"
+    
+    # config에서 굴절률 정보 가져오기 
+    REFRAC_INFO=$(python << EOF
+import sys
+from pathlib import Path
+
+config_path = Path("$CONFIG_FILE").resolve()
+config_dir = config_path.parent
+config_module = config_path.stem
+
+sys.path.insert(0, str(config_dir))
+
+try:
+    config = __import__(config_module)
+    
+    # ADDA_PARAMS에서 굴절률 세트 가져오기
+    adda_params = getattr(config, 'ADDA_PARAMS', {})
+    refrac_sets = adda_params.get('refractive_index_sets', [])
+    
+    if len(refrac_sets) > 0 and len(refrac_sets[0]) >= 2:
+        n_key, k_key = refrac_sets[0][0], refrac_sets[0][1]
+        
+        # n_johnson, k_johnson -> johnson 추출
+        if n_key.startswith('n_') and k_key.startswith('k_'):
+            name_n = n_key[2:]  # "n_" 제거
+            name_k = k_key[2:]  # "k_" 제거
+            if name_n == name_k:
+                refrac_name = name_n
+            else:
+                refrac_name = f"{n_key}_{k_key}"
+        else:
+            refrac_name = f"{n_key}_{k_key}"
+        
+        print(f"REFRAC_NAME={refrac_name}")
+        print(f"N_KEY={n_key}")
+        print(f"K_KEY={k_key}")
+        print("SUCCESS=1")
+    else:
+        print("SUCCESS=0")
+        
+except Exception as e:
+    print(f"ERROR: {e}")
+    print("SUCCESS=0")
+EOF
+)
+    
+    eval "$REFRAC_INFO"
+    
+    if [ "$SUCCESS" != "1" ]; then
+        log_error "Failed to extract refractive index information from config"
+        return 1
+    fi
+    
+    log_info "굴절률 테스트 설정:"
+    log_info "  굴절률: $REFRAC_NAME ($N_KEY, $K_KEY)"
+    log_info "  폴더명: $REFRAC_NAME"
+    echo ""
+    
+    # 임시 환경변수로 refractive test 모드 표시
+    export ADDA_REFRACTIVE_TEST_MODE="true"
+    export ADDA_CONFIG_FILE="$CONFIG_FILE"
+    
+    # 시뮬레이션 실행
+    if ./run_simulation.sh; then
+        log_success "Simulation completed for: $REFRAC_NAME"
+        
+        if [ "$sim_only" != "true" ]; then
+            # 후처리 실행
+            if python process_result.py --config "$CONFIG_FILE"; then
+                log_success "Post-processing completed for: $REFRAC_NAME"
+            else
+                log_warning "Post-processing failed for: $REFRAC_NAME"
+            fi
+        fi
+    else
+        log_error "Simulation failed for: $REFRAC_NAME"
+        return 1
+    fi
+    
+    # 환경변수 정리
+    unset ADDA_REFRACTIVE_TEST_MODE
+    
+    log_success "굴절률 테스트 완료: $REFRAC_NAME"
 }
 
 # 시뮬레이션 실행
@@ -348,7 +560,7 @@ except Exception as e:
 EOF
 }
 
-# config에서 MAT_TYPE 가져오기
+# config에서 MAT_TYPE 가져오기 (자동 생성 지원)
 get_mat_type_from_config() {
     python << EOF
 import sys
@@ -363,9 +575,15 @@ sys.path.insert(0, str(config_dir))
 
 try:
     config = __import__(config_module)
-    print(config.MAT_TYPE)
+    
+    # MAT_TYPE이 있으면 사용, 없으면 기본값
+    if hasattr(config, 'MAT_TYPE'):
+        print(config.MAT_TYPE)
+    else:
+        print("default_particle")
+        
 except Exception as e:
-    print("model_Au47.0_Ag0.0_AgCl0.0_gap3.0")  # fallback
+    print("default_particle")  # fallback
 EOF
 }
 
@@ -378,9 +596,9 @@ check_status() {
     MAT_TYPE=$(get_mat_type_from_config)
     
     echo ""
-    echo "📋 Config file: $CONFIG_FILE"
-    echo "🔬 MAT_TYPE: $MAT_TYPE"
-    echo "📁 Research directory: $RESEARCH_DIR"
+    echo "[CONFIG] Config file: $CONFIG_FILE"
+    echo "[MODEL] MAT_TYPE: $MAT_TYPE"
+    echo "[DIR] Research directory: $RESEARCH_DIR"
     echo ""
     
     if [ -d "$RESEARCH_DIR" ]; then
@@ -388,21 +606,21 @@ check_status() {
         MODEL_DIR="$RESEARCH_DIR/$MAT_TYPE"
         if [ -d "$MODEL_DIR" ]; then
             lambda_count=$(find "$MODEL_DIR" -name "lambda_*nm" -type d 2>/dev/null | wc -l)
-            echo "✅ Found target model: $MAT_TYPE ($lambda_count wavelengths)"
+            echo "[FOUND] Found target model: $MAT_TYPE ($lambda_count wavelengths)"
         else
-            echo "❌ Target model not found: $MAT_TYPE"
+            echo "[NOT FOUND] Target model not found: $MAT_TYPE"
         fi
         
         echo ""
-        echo "📊 All models in research directory:"
+        echo "[ALL MODELS] All models in research directory:"
         for model_dir in "$RESEARCH_DIR"/*/; do
             if [ -d "$model_dir" ]; then
                 model_name=$(basename "$model_dir")
                 lambda_count=$(find "$model_dir" -name "lambda_*nm" -type d 2>/dev/null | wc -l)
                 if [ "$model_name" = "$MAT_TYPE" ]; then
-                    echo "  🎯 $model_name ($lambda_count wavelengths) <- TARGET"
+                    echo "  [TARGET] $model_name ($lambda_count wavelengths) <- TARGET"
                 else
-                    echo "  📁 $model_name ($lambda_count wavelengths)"
+                    echo "  [MODEL] $model_name ($lambda_count wavelengths)"
                 fi
             fi
         done
@@ -450,11 +668,25 @@ main() {
                 # 이미 처리됨
                 shift 2
                 ;;
-            --sim-only)
+            --refractive-test)
                 check_dependencies
-                run_simulations
+                run_refractive_test false
                 shift
                 break
+                ;;
+            --sim-only)
+                # --refractive-test와 함께 사용될 수 있는지 확인
+                if [[ "$*" == *"--refractive-test"* ]]; then
+                    check_dependencies
+                    run_refractive_test true
+                    shift
+                    break
+                else
+                    check_dependencies
+                    run_simulations
+                    shift
+                    break
+                fi
                 ;;
             --process-only)
                 check_dependencies
@@ -482,6 +714,12 @@ main() {
             --check-status)
                 check_structure
                 check_status
+                shift
+                break
+                ;;
+            --check-shape)
+                check_structure
+                check_shape_config
                 shift
                 break
                 ;;

@@ -1,13 +1,15 @@
 """
-ADDA 후처리 통합 관리자 - 플롯 저장 및 txt 출력 수정 버전
+ADDA 후처리 통합 관리자 - 자동 폴더명 지원 완전판
 postprocess/postprocess.py
 
-config.py에서 지정한 MAT_TYPE을 사용하여 특정 모델만 분석
+config.py에서 지정한 MAT_TYPE을 사용하거나 자동 생성하여 분석
+refractive test 모드에서는 굴절률이름/형상_크기 구조 지원
 """
 import logging
 import pandas as pd
 import re
 import sys
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -38,6 +40,123 @@ def load_config(config_file: str = None):
         return config
     except ImportError as e:
         raise ImportError(f"Failed to import config from {config_path}: {e}")
+
+def extract_refrac_name_from_config(config):
+    """config에서 굴절률 이름 추출"""
+    try:
+        adda_params = getattr(config, 'ADDA_PARAMS', {})
+        refrac_sets = adda_params.get('refractive_index_sets', [])
+        
+        if len(refrac_sets) > 0 and len(refrac_sets[0]) >= 2:
+            n_key, k_key = refrac_sets[0][0], refrac_sets[0][1]
+            
+            # n_johnson, k_johnson -> johnson 추출
+            if n_key.startswith('n_') and k_key.startswith('k_'):
+                name_n = n_key[2:]  # "n_" 제거
+                name_k = k_key[2:]  # "k_" 제거
+                if name_n == name_k:
+                    return name_n
+                else:
+                    return f"{n_key}_{k_key}"
+            else:
+                return f"{n_key}_{k_key}"
+        else:
+            return "unknown_refrac"
+    except Exception as e:
+        logger.error(f"Failed to extract refractive name: {e}")
+        return "unknown_refrac"
+
+def generate_mat_type_from_config(config):
+    """config에서 자동으로 MAT_TYPE 생성 (일반 모드용)"""
+    try:
+        shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
+        shape_type = shape_config.get('type', 'sphere')
+        shape_args = shape_config.get('args', [])
+        
+        adda_params = getattr(config, 'ADDA_PARAMS', {})
+        size = adda_params.get('size', 0.02)
+        
+        if shape_type == 'sphere':
+            return f"sphere_{size}"
+        elif shape_type == 'ellipsoid':
+            if len(shape_args) >= 2:
+                return f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+            else:
+                return f"ellipsoid_{size}"
+        elif shape_type == 'cylinder':
+            if len(shape_args) >= 1:
+                return f"cylinder_{size}_aspect{shape_args[0]}"
+            else:
+                return f"cylinder_{size}"
+        elif shape_type == 'box':
+            if len(shape_args) >= 2:
+                return f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+            else:
+                return f"box_{size}"
+        elif shape_type == 'coated':
+            if len(shape_args) >= 1:
+                return f"coated_{size}_ratio{shape_args[0]}"
+            else:
+                return f"coated_{size}"
+        elif shape_type == 'read':
+            return "custom_shape"
+        else:
+            return f"{shape_type}_{size}"
+    except Exception as e:
+        logger.error(f"Failed to generate MAT_TYPE: {e}")
+        return "default_particle"
+
+def generate_refractive_test_mat_type(config):
+    """refractive test 모드에서 굴절률이름/형상_크기 형태의 MAT_TYPE 생성"""
+    try:
+        # 굴절률 이름 추출
+        refrac_name = extract_refrac_name_from_config(config)
+        
+        # 형상+크기 조합 생성
+        shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
+        shape_type = shape_config.get('type', 'sphere')
+        shape_args = shape_config.get('args', [])
+        shape_eq_rad = shape_config.get('eq_rad', None)
+        
+        adda_params = getattr(config, 'ADDA_PARAMS', {})
+        size = adda_params.get('size', 0.02)
+        
+        if shape_type == 'sphere':
+            if shape_eq_rad is not None:
+                shape_size = f"sphere_eq{shape_eq_rad}"
+            else:
+                shape_size = f"sphere_{size}"
+        elif shape_type == 'ellipsoid':
+            if len(shape_args) >= 2:
+                shape_size = f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+            else:
+                shape_size = f"ellipsoid_{size}"
+        elif shape_type == 'cylinder':
+            if len(shape_args) >= 1:
+                shape_size = f"cylinder_{size}_aspect{shape_args[0]}"
+            else:
+                shape_size = f"cylinder_{size}"
+        elif shape_type == 'box':
+            if len(shape_args) >= 2:
+                shape_size = f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+            else:
+                shape_size = f"box_{size}"
+        elif shape_type == 'coated':
+            if len(shape_args) >= 1:
+                shape_size = f"coated_{size}_ratio{shape_args[0]}"
+            else:
+                shape_size = f"coated_{size}"
+        elif shape_type == 'read':
+            shape_size = "custom_shape"
+        else:
+            shape_size = f"{shape_type}_{size}"
+        
+        # 최종 경로: 굴절률이름/형상_크기
+        return f"{refrac_name}/{shape_size}"
+        
+    except Exception as e:
+        logger.error(f"Failed to generate refractive test MAT_TYPE: {e}")
+        return "unknown_refrac/unknown_shape"
 
 class ADDAModelAnalyzer:
     """ADDA 모델 분석 클래스 - config 기반"""
@@ -90,13 +209,16 @@ class ADDAModelAnalyzer:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # CSV 저장 (MAT_TYPE 사용)
-        csv_file = output_dir / f"{self.mat_type}_results.csv"
+        # 파일명에서 슬래시를 언더스코어로 변경 (파일시스템 호환성)
+        safe_mat_type = self.mat_type.replace('/', '_')
+        
+        # CSV 저장
+        csv_file = output_dir / f"{safe_mat_type}_results.csv"
         self.df.to_csv(csv_file, index=False)
         logger.info(f"Results saved to {csv_file}")
         
-        # TXT 저장 (사용자가 직접 사용할 수 있도록)
-        txt_file = output_dir / f"{self.mat_type}_spectrum_data.txt"
+        # TXT 저장
+        txt_file = output_dir / f"{safe_mat_type}_spectrum_data.txt"
         with open(txt_file, 'w') as f:
             f.write(f"# Optical Properties Data for {self.mat_type}\n")
             f.write(f"# Wavelength(nm)\tExtinction\tAbsorption\tScattering\n")
@@ -154,25 +276,36 @@ class ADDAModelAnalyzer:
         
         print(f"{'='*60}")
 
-# 편의 함수들 - config 기반으로 수정
+# 편의 함수들 - 자동 MAT_TYPE 생성 지원
 def analyze_model_from_config(config_file: str = None, output_dir: Path = None, show_plots: bool = True) -> ADDAModelAnalyzer:
-    """편의 함수: config.py의 MAT_TYPE을 사용하여 특정 모델 분석"""
+    """편의 함수: config.py를 사용하여 모델 분석 (자동 MAT_TYPE 지원)"""
     config = load_config(config_file)
     
     # config에서 필요한 값들 가져오기
-    mat_type = getattr(config, 'MAT_TYPE', None)
     research_base_dir = getattr(config, 'RESEARCH_BASE_DIR', Path.home() / "research" / "adda")
-    
-    if not mat_type:
-        raise ValueError("MAT_TYPE not found in config file")
-    
     research_base_dir = Path(research_base_dir).expanduser()
+    
+    # refractive test 모드 확인
+    refractive_test_mode = os.environ.get('ADDA_REFRACTIVE_TEST_MODE') == 'true'
+    
+    if refractive_test_mode:
+        # refractive test 모드: 굴절률이름/형상_크기 구조
+        mat_type = generate_refractive_test_mat_type(config)
+        logger.info(f"Refractive test mode: Using MAT_TYPE = {mat_type}")
+    else:
+        # 일반 모드: MAT_TYPE 또는 자동 생성
+        mat_type = getattr(config, 'MAT_TYPE', None)
+        if mat_type is None:
+            mat_type = generate_mat_type_from_config(config)
+            logger.info(f"Auto-generated MAT_TYPE = {mat_type}")
+        else:
+            logger.info(f"Using config MAT_TYPE = {mat_type}")
+    
     model_dir = research_base_dir / mat_type
     
     if not model_dir.exists():
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
     
-    logger.info(f"Using MAT_TYPE from config: {mat_type}")
     logger.info(f"Model directory: {model_dir}")
     
     analyzer = ADDAModelAnalyzer(model_dir, mat_type)
@@ -191,11 +324,12 @@ def analyze_model_from_config(config_file: str = None, output_dir: Path = None, 
     analyzer.print_summary()
     
     # 생성된 파일들 안내
-    print(f"\n📁 Generated files:")
-    print(f"  📊 CSV data: {csv_file}")
-    print(f"  📈 Spectrum data: {txt_file}")
+    print(f"\n[FILES] Generated files:")
+    print(f"  [CSV] CSV data: {csv_file}")
+    print(f"  [TXT] Spectrum data: {txt_file}")
     if plot_file:
-        print(f"  🎨 Plot: {output_dir / f'{mat_type}_optical_properties.png'}")
+        safe_mat_type = mat_type.replace('/', '_')
+        print(f"  [PLOT] Plot: {output_dir / f'{safe_mat_type}_optical_properties.png'}")
     
     return analyzer
 
@@ -212,39 +346,54 @@ def analyze_model(model_dir: Path, output_dir: Path = None, show_plots: bool = T
     return analyzer
 
 def analyze_all_models_from_config(config_file: str = None, output_dir: Path = None, show_plots: bool = False):
-    """편의 함수: config.py 기반으로 모델 분석 (MAT_TYPE 사용)"""
+    """편의 함수: config.py 기반으로 모델 분석 (자동 MAT_TYPE 지원)"""
     config = load_config(config_file)
     
     # config에서 값들 가져오기
-    mat_type = getattr(config, 'MAT_TYPE', None)
     research_base_dir = getattr(config, 'RESEARCH_BASE_DIR', Path.home() / "research" / "adda")
-    
-    if not mat_type:
-        raise ValueError("MAT_TYPE not found in config file")
-    
     research_base_dir = Path(research_base_dir).expanduser()
     
-    # MAT_TYPE에 해당하는 모델만 분석
-    model_dir = research_base_dir / mat_type
+    # refractive test 모드 확인
+    refractive_test_mode = os.environ.get('ADDA_REFRACTIVE_TEST_MODE') == 'true'
     
-    if not model_dir.exists():
-        logger.error(f"Model directory not found: {model_dir}")
-        print(f"Expected model directory: {model_dir}")
-        print(f"MAT_TYPE from config: {mat_type}")
-        return {}
-    
-    logger.info(f"Processing model specified in config: {mat_type}")
-    print(f"Found model to analyze: {model_dir.name}")
-    
-    results = {}
-    try:
-        analyzer = analyze_model(model_dir, output_dir, show_plots, mat_type)
-        results[mat_type] = analyzer
-        logger.info(f"Successfully processed {mat_type}")
-    except Exception as e:
-        logger.error(f"Failed to process {mat_type}: {e}")
-    
-    return results
+    if refractive_test_mode:
+        mat_type = generate_refractive_test_mat_type(config)
+        model_dir = research_base_dir / mat_type
+        
+        if not model_dir.exists():
+            logger.error(f"Model directory not found: {model_dir}")
+            return {}
+        
+        results = {}
+        try:
+            analyzer = analyze_model(model_dir, output_dir, show_plots, mat_type)
+            results[mat_type] = analyzer
+            logger.info(f"Successfully processed {mat_type}")
+        except Exception as e:
+            logger.error(f"Failed to process {mat_type}: {e}")
+        
+        return results
+    else:
+        # 일반 모드: config의 MAT_TYPE 또는 자동 생성
+        mat_type = getattr(config, 'MAT_TYPE', None)
+        if mat_type is None:
+            mat_type = generate_mat_type_from_config(config)
+        
+        model_dir = research_base_dir / mat_type
+        
+        if not model_dir.exists():
+            logger.error(f"Model directory not found: {model_dir}")
+            return {}
+        
+        results = {}
+        try:
+            analyzer = analyze_model(model_dir, output_dir, show_plots, mat_type)
+            results[mat_type] = analyzer
+            logger.info(f"Successfully processed {mat_type}")
+        except Exception as e:
+            logger.error(f"Failed to process {mat_type}: {e}")
+        
+        return results
 
 def analyze_all_models(base_dir: Path, output_dir: Path = None, show_plots: bool = False):
     """편의 함수: 기존 방식 - 모든 model_* 디렉토리 분석 (기존 호환성 유지)"""
