@@ -1,13 +1,16 @@
 #!/bin/bash
 
-# ADDA 시뮬레이션 전용 스크립트 - Shape 옵션 + 선형 보간 + eq_rad 지원
-# config.py에서 모든 설정(굴절률 + 형상 포함)을 가져와서 사용
-# 굴절률 데이터에 대해 선형 보간 수행
-# sphere 형상에서 eq_rad 옵션 지원
+# ADDA 시뮬레이션 전용 스크립트 - Python 스크립트 분리 버전
+# Python 로직을 별도 파일로 분리하여 더 깔끔한 구조 구현
 
-# 설정 파일 경로 결정
-CONFIG_FILE=${ADDA_CONFIG_FILE:-"./config/config.py"}
+# 설정 파일 경로 결정 (필수)
+if [ -z "$ADDA_CONFIG_FILE" ]; then
+    echo "[ERROR] CONFIG_FILE environment variable not set"
+    echo "[ERROR] Please specify config file via ADDA_CONFIG_FILE environment variable or master.sh --config option"
+    exit 1
+fi
 
+CONFIG_FILE="$ADDA_CONFIG_FILE"
 echo "[CONFIG] Using config file: $CONFIG_FILE"
 
 # MPI 실행 환경 감지
@@ -26,179 +29,24 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
+# Python 스크립트 파일 확인
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_LOADER="$SCRIPT_DIR/adda_utils/config_loader.py"
+REFRAC_INTERPOLATOR="$SCRIPT_DIR/adda_utils/refrac_interpolator.py"
+
+if [ ! -f "$CONFIG_LOADER" ]; then
+    echo "[ERROR] Config loader script not found: $CONFIG_LOADER"
+    exit 1
+fi
+
+if [ ! -f "$REFRAC_INTERPOLATOR" ]; then
+    echo "[ERROR] Refractive interpolator script not found: $REFRAC_INTERPOLATOR"
+    exit 1
+fi
+
 # config 파일에서 기본 설정값들 로드
 echo "[CONFIG] Loading configuration from $CONFIG_FILE..."
-CONFIG_VALUES=$(python << EOF
-try:
-    import sys
-    from pathlib import Path
-    
-    # config 파일 동적 로드
-    config_path = Path("$CONFIG_FILE").resolve()
-    config_dir = config_path.parent
-    config_module = config_path.stem
-    
-    sys.path.insert(0, str(config_dir))
-    config = __import__(config_module)
-    
-    # 기본값 설정
-    default_home = Path.home()
-    
-    # config.py에서 값 가져오기
-    mat_type = getattr(config, 'MAT_TYPE', None)
-    
-    # refractive test 모드 확인
-    refractive_test_mode = "$ADDA_REFRACTIVE_TEST_MODE" == "true"
-    
-    if refractive_test_mode:
-        # refractive test 모드: 굴절률이름/형상_크기 구조
-        adda_params = getattr(config, 'ADDA_PARAMS', {})
-        refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
-        
-        if len(refrac_sets) > 0 and len(refrac_sets[0]) >= 2:
-            n_key, k_key = refrac_sets[0][0], refrac_sets[0][1]
-            
-            # n_johnson, k_johnson -> johnson 추출
-            if n_key.startswith('n_') and k_key.startswith('k_'):
-                name_n = n_key[2:]  # "n_" 제거
-                name_k = k_key[2:]  # "k_" 제거
-                if name_n == name_k:
-                    refrac_name = name_n
-                else:
-                    refrac_name = f"{n_key}_{k_key}"
-            else:
-                refrac_name = f"{n_key}_{k_key}"
-            
-            # 형상+크기 조합 생성
-            shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
-            shape_type = shape_config.get('type', 'sphere')
-            shape_args = shape_config.get('args', [])
-            shape_eq_rad = shape_config.get('eq_rad', None)
-            size = adda_params.get('size', 0.02)
-            
-            if shape_type == 'sphere':
-                if shape_eq_rad is not None:
-                    shape_size = f"sphere_eq{shape_eq_rad}"
-                else:
-                    shape_size = f"sphere_{size}"
-            elif shape_type == 'ellipsoid':
-                if len(shape_args) >= 2:
-                    shape_size = f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-                else:
-                    shape_size = f"ellipsoid_{size}"
-            elif shape_type == 'cylinder':
-                if len(shape_args) >= 1:
-                    shape_size = f"cylinder_{size}_aspect{shape_args[0]}"
-                else:
-                    shape_size = f"cylinder_{size}"
-            elif shape_type == 'box':
-                if len(shape_args) >= 2:
-                    shape_size = f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-                else:
-                    shape_size = f"box_{size}"
-            elif shape_type == 'coated':
-                if len(shape_args) >= 1:
-                    shape_size = f"coated_{size}_ratio{shape_args[0]}"
-                else:
-                    shape_size = f"coated_{size}"
-            else:
-                shape_size = f"{shape_type}_{size}"
-            
-            # 최종 경로: 굴절률이름/형상_크기
-            mat_type = f"{refrac_name}/{shape_size}"
-        else:
-            mat_type = "default_particle"
-    elif mat_type is None:
-        # 일반 모드: 형상+크기로 자동 생성
-        shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
-        shape_type = shape_config.get('type', 'sphere')
-        shape_args = shape_config.get('args', [])
-        shape_eq_rad = shape_config.get('eq_rad', None)
-        
-        adda_params = getattr(config, 'ADDA_PARAMS', {})
-        size = adda_params.get('size', 0.02)
-        
-        if shape_type == 'sphere':
-            if shape_eq_rad is not None:
-                mat_type = f"sphere_eq{shape_eq_rad}"
-            else:
-                mat_type = f"sphere_{size}"
-        elif shape_type == 'ellipsoid':
-            if len(shape_args) >= 2:
-                mat_type = f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-            else:
-                mat_type = f"ellipsoid_{size}"
-        elif shape_type == 'cylinder':
-            if len(shape_args) >= 1:
-                mat_type = f"cylinder_{size}_aspect{shape_args[0]}"
-            else:
-                mat_type = f"cylinder_{size}"
-        elif shape_type == 'box':
-            if len(shape_args) >= 2:
-                mat_type = f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-            else:
-                mat_type = f"box_{size}"
-        elif shape_type == 'coated':
-            if len(shape_args) >= 1:
-                mat_type = f"coated_{size}_ratio{shape_args[0]}"
-            else:
-                mat_type = f"coated_{size}"
-        elif shape_type == 'read':
-            mat_type = "custom_shape"
-        else:
-            mat_type = f"{shape_type}_{size}"
-    
-    home_dir = getattr(config, 'HOME', default_home)
-    adda_bin = getattr(config, 'ADDA_BIN', home_dir / "adda" / "src")
-    dataset_dir = getattr(config, 'DATASET_DIR', home_dir / "dataset" / "adda")
-    research_base = getattr(config, 'RESEARCH_BASE_DIR', home_dir / "research" / "adda")
-    mpi_procs = getattr(config, 'MPI_PROCS', 40)
-    lambda_start = getattr(config, 'LAMBDA_START', 400)
-    lambda_end = getattr(config, 'LAMBDA_END', 1200)
-    lambda_step = getattr(config, 'LAMBDA_STEP', 10)
-    
-    # ADDA 파라미터 가져오기
-    adda_params = getattr(config, 'ADDA_PARAMS', {})
-    size = adda_params.get('size', 0.097)
-    eps = adda_params.get('eps', 5)
-    maxiter = adda_params.get('maxiter', 10000000)
-    
-    # 굴절률 세트 정보
-    refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
-    refrac_sets_str = ';'.join([','.join(map(str, pair)) for pair in refrac_sets])
-    
-    # Shape 설정 가져오기
-    shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
-    shape_type = shape_config.get('type', 'sphere')
-    shape_args = shape_config.get('args', [])
-    shape_filename = shape_config.get('filename', None)
-    shape_eq_rad = shape_config.get('eq_rad', None)
-    
-    # Shape 인수를 문자열로 변환
-    shape_args_str = ' '.join(map(str, shape_args)) if shape_args else ''
-    
-    # bash에서 사용할 수 있는 형태로 출력
-    print(f'MAT_TYPE="{mat_type}"')
-    print(f'ADDA_BIN_PATH="{adda_bin}"')
-    print(f'DATASET_BASE="{dataset_dir}"')
-    print(f'RESEARCH_BASE="{research_base}"')
-    print(f'MPI_PROCESSES={mpi_procs}')
-    print(f'LAMBDA_START={lambda_start}')
-    print(f'LAMBDA_END={lambda_end}')
-    print(f'LAMBDA_STEP={lambda_step}')
-    print(f'ADDA_SIZE={size}')
-    print(f'ADDA_EPS={eps}')
-    print(f'ADDA_MAXITER={maxiter}')
-    print(f'REFRAC_SETS="{refrac_sets_str}"')
-    print(f'SHAPE_TYPE="{shape_type}"')
-    print(f'SHAPE_ARGS="{shape_args_str}"')
-    print(f'SHAPE_FILENAME="{shape_filename}"')
-    print(f'SHAPE_EQ_RAD="{shape_eq_rad}"')
-    
-except Exception as e:
-    print(f'echo "[ERROR] Failed to load config: {e}"; exit 1')
-EOF
-)
+CONFIG_VALUES=$(python "$CONFIG_LOADER" "$CONFIG_FILE")
 
 # Python에서 가져온 설정값들을 bash 변수로 설정
 eval "$CONFIG_VALUES"
@@ -218,14 +66,21 @@ echo "   MPI_PROCESSES: $MPI_PROCESSES"
 echo "   Wavelength range: $LAMBDA_START-$LAMBDA_END nm (step: $LAMBDA_STEP)"
 echo "   Refractive index sets: $REFRAC_SETS"
 echo "   Shape type: $SHAPE_TYPE"
+echo "   Polarization: $ADDA_POL"
 if [ -n "$SHAPE_ARGS" ]; then
     echo "   Shape args: $SHAPE_ARGS"
 fi
-if [ "$SHAPE_TYPE" = "read" ] && [ -n "$SHAPE_FILENAME" ]; then
+if [ "$SHAPE_TYPE" = "read" ] && [ -n "$SHAPE_FILENAME" ] && [ "$SHAPE_FILENAME" != "None" ]; then
     echo "   Shape file: $SHAPE_FILENAME"
 fi
 if [ "$SHAPE_TYPE" = "sphere" ] && [ -n "$SHAPE_EQ_RAD" ] && [ "$SHAPE_EQ_RAD" != "None" ]; then
     echo "   Sphere eq_rad: $SHAPE_EQ_RAD"
+fi
+if [ -n "$EXTRA_ADDA_PARAMS" ]; then
+    echo "   Extra ADDA params: $EXTRA_ADDA_PARAMS"
+fi
+if [ -n "$BOOL_FLAGS" ]; then
+    echo "   Boolean flags: $BOOL_FLAGS"
 fi
 echo ""
 
@@ -272,7 +127,7 @@ build_shape_command() {
             fi
             ;;
         "read")
-            if [ -n "$SHAPE_FILENAME" ]; then
+            if [ -n "$SHAPE_FILENAME" ] && [ "$SHAPE_FILENAME" != "None" ]; then
                 echo "-shape read $SHAPE_FILENAME"
             else
                 echo "[ERROR] read shape requires filename"
@@ -316,7 +171,7 @@ echo "[OK] All required files found!"
 echo ""
 
 # 기본 결과 디렉토리 생성
-mkdir -p $RESULT_BASE_DIR1
+mkdir -p "$RESULT_BASE_DIR1"
 
 # 시뮬레이션 상태 추적 파일
 COMPLETED_FILE="$RESULT_BASE_DIR1/completed_simulations.txt"
@@ -340,175 +195,18 @@ mark_simulation_failed() {
     echo "$lambda" >> "$FAILED_FILE"
 }
 
-# config.py에서 특정 파장의 모든 굴절률 세트 가져오는 함수 (선형 보간 지원)
+# config.py에서 특정 파장의 모든 굴절률 세트 가져오는 함수
 get_all_refractive_indices() {
     local wavelength=$1
-    python << EOF
-import sys
-from pathlib import Path
-
-# config 파일 동적 로드
-config_path = Path("$CONFIG_FILE").resolve()
-config_dir = config_path.parent
-config_module = config_path.stem
-
-sys.path.insert(0, str(config_dir))
-config = __import__(config_module)
-
-def linear_interpolate(x, x1, y1, x2, y2):
-    """선형 보간 함수"""
-    if x2 == x1:
-        return y1
-    return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
-
-def read_and_interpolate_file(file_path, target_wavelength):
-    """파일에서 데이터를 읽고 목표 파장에 대해 보간"""
-    data_points = []
-    
-    try:
-        with open(file_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        try:
-                            wl = float(parts[0])
-                            val = float(parts[1])
-                            data_points.append((wl, val))
-                        except ValueError:
-                            continue
-        
-        if not data_points:
-            return None
-        
-        # 파장 기준으로 정렬
-        data_points.sort(key=lambda x: x[0])
-        
-        # 정확히 일치하는 파장이 있는지 확인
-        for wl, val in data_points:
-            if abs(wl - target_wavelength) < 1e-6:
-                return val
-        
-        # 보간 수행
-        # 목표 파장보다 작은 파장들 중 가장 큰 것 찾기
-        lower_point = None
-        for wl, val in data_points:
-            if wl <= target_wavelength:
-                lower_point = (wl, val)
-            else:
-                break
-        
-        # 목표 파장보다 큰 파장들 중 가장 작은 것 찾기
-        upper_point = None
-        for wl, val in data_points:
-            if wl >= target_wavelength:
-                upper_point = (wl, val)
-                break
-        
-        # 보간 수행
-        if lower_point and upper_point:
-            # 두 점 사이에서 선형 보간
-            x1, y1 = lower_point
-            x2, y2 = upper_point
-            interpolated_value = linear_interpolate(target_wavelength, x1, y1, x2, y2)
-            print(f"# Interpolated {target_wavelength}nm: {interpolated_value:.6f} (between {x1}nm:{y1:.6f} and {x2}nm:{y2:.6f})", file=sys.stderr)
-            return interpolated_value
-        elif lower_point:
-            # 범위를 벗어남 - 상한선 밖 (에러)
-            min_wl = data_points[0][0]
-            max_wl = data_points[-1][0]
-            print(f"# ERROR: Wavelength {target_wavelength}nm is outside data range ({min_wl}-{max_wl}nm). Cannot extrapolate beyond maximum.", file=sys.stderr)
-            return None
-        elif upper_point:
-            # 범위를 벗어남 - 하한선 밖 (에러)
-            min_wl = data_points[0][0]
-            max_wl = data_points[-1][0]
-            print(f"# ERROR: Wavelength {target_wavelength}nm is outside data range ({min_wl}-{max_wl}nm). Cannot extrapolate beyond minimum.", file=sys.stderr)
-            return None
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"# Error reading file {file_path}: {e}", file=sys.stderr)
-        return None
-
-try:
-    wavelength = $wavelength
-    
-    # ADDA_PARAMS에서 굴절률 세트들 가져오기
-    adda_params = getattr(config, 'ADDA_PARAMS', {})
-    refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
-    
-    # 굴절률 파일들 정보 가져오기
-    refrac_files = getattr(config, 'REFRACTIVE_INDEX_FILES', {})
-    
-    # 모든 굴절률 값들을 순서대로 수집
-    all_values = []
-    success = True
-    
-    for item in refrac_sets:
-        # 상수값인지 파일키인지 판단
-        if isinstance(item, list) and len(item) == 2:
-            n_item, k_item = item
-            
-            # 둘 다 숫자면 상수값
-            if isinstance(n_item, (int, float)) and isinstance(k_item, (int, float)):
-                n_val = float(n_item)
-                k_val = float(k_item)
-                all_values.extend([n_val, k_val])
-                continue
-            
-            # 둘 다 문자열이면 파일키
-            elif isinstance(n_item, str) and isinstance(k_item, str):
-                n_key = n_item
-                k_key = k_item
-                
-                # n 값 읽기 (보간 사용)
-                n_val = None
-                if n_key in refrac_files:
-                    n_val = read_and_interpolate_file(refrac_files[n_key], wavelength)
-                
-                # k 값 읽기 (보간 사용)
-                k_val = None
-                if k_key in refrac_files:
-                    k_val = read_and_interpolate_file(refrac_files[k_key], wavelength)
-                
-                if n_val is not None and k_val is not None:
-                    all_values.extend([n_val, k_val])
-                    print(f"# Refractive index for {wavelength}nm: n={n_val:.6f}, k={k_val:.6f}", file=sys.stderr)
-                else:
-                    print(f"# ERROR: Values not found for {n_key}, {k_key} at wavelength {wavelength}", file=sys.stderr)
-                    success = False
-                    break
-            else:
-                print(f"# ERROR: Invalid refractive index set format: {item}", file=sys.stderr)
-                success = False
-                break
-        else:
-            print(f"# ERROR: Invalid refractive index set format: {item}", file=sys.stderr)
-            success = False
-            break
-    
-    if success and len(all_values) > 0:
-        # 모든 값들을 공백으로 구분된 문자열로 출력
-        values_str = ' '.join(map(str, all_values))
-        print(f"REFRAC_VALUES=\"{values_str}\"")
-        print("SUCCESS=1")
-    else:
-        print("SUCCESS=0")
-        
-except Exception as e:
-    print(f"# ERROR: {e}", file=sys.stderr)
-    print("SUCCESS=0")
-EOF
+    python "$REFRAC_INTERPOLATOR" "$CONFIG_FILE" "$wavelength"
 }
 
-echo "[START] Starting ADDA simulations with interpolation support..."
+echo "[START] Starting ADDA simulations with flexible parameter support..."
 echo "[INFO] Results will be saved to: $RESULT_BASE_DIR1"
 echo "[INFO] Using $MPI_PROCESSES MPI processes"
 echo "[INFO] Using shape: $SHAPE_COMMAND"
-echo "[INFO] Interpolation: Linear interpolation for refractive indices"
+echo "[INFO] Extra ADDA parameters: $EXTRA_ADDA_PARAMS"
+echo "[INFO] Boolean flags: $BOOL_FLAGS"
 echo ""
 
 # 파장별 시뮬레이션 루프
@@ -542,18 +240,27 @@ for LAMBDA in $(seq $LAMBDA_START $LAMBDA_STEP $LAMBDA_END); do
     if [ "$SUCCESS" = "1" ]; then
         echo "     [VALUES] Refractive indices: $REFRAC_VALUES"
         
-        # ADDA 시뮬레이션 실행 (Shape 명령 적용)
-        echo "  [RUN] Running ADDA simulation with shape: $SHAPE_TYPE..."
-        $MPI_EXEC $MPI_PROCESSES $ADDA_BIN/mpi/adda_mpi \
+        # ADDA 시뮬레이션 실행 명령 구성
+        echo "  [RUN] Running ADDA simulation..."
+        ADDA_COMMAND="$MPI_EXEC $MPI_PROCESSES $ADDA_BIN/mpi/adda_mpi \
             $SHAPE_COMMAND \
-            -pol ldr \
+            -pol $ADDA_POL \
             -lambda $(echo "scale=3; $LAMBDA/1000" | bc) \
             -m $REFRAC_VALUES \
             -maxiter $ADDA_MAXITER \
             -dir $LAMBDA_PATH \
             -eps $ADDA_EPS \
-            -store_dip_pol \
-            -store_int_field
+            $BOOL_FLAGS"
+        
+        # 추가 파라미터들 추가
+        if [ -n "$EXTRA_ADDA_PARAMS" ]; then
+            ADDA_COMMAND="$ADDA_COMMAND $EXTRA_ADDA_PARAMS"
+        fi
+        
+        echo "     [COMMAND] $ADDA_COMMAND"
+        
+        # 시뮬레이션 실행
+        eval $ADDA_COMMAND
         
         # 시뮬레이션 성공 여부 확인
         if [ $? -eq 0 ]; then
