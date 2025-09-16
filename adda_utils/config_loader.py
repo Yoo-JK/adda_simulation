@@ -42,7 +42,7 @@ def load_config_values(config_file_path):
         adda_params = getattr(config, 'ADDA_PARAMS', {})
         refrac_sets = adda_params.get('refractive_index_sets', [['n_100', 'k_100']])
         
-        # MAT_TYPE 결정
+        # MAT_TYPE 결정 (명시적으로 정의된 것 우선)
         mat_type = getattr(config, 'MAT_TYPE', None)
         
         if refractive_test_mode:
@@ -61,7 +61,7 @@ def load_config_values(config_file_path):
                 else:
                     refrac_name = f"{n_key}_{k_key}"
                 
-                # MAT_TYPE이 없으면 형상+크기로 자동 생성
+                # MAT_TYPE이 명시되어 있지 않으면 자동 생성
                 if mat_type is None:
                     mat_type = generate_mat_type_from_shape(config, adda_params)
                 
@@ -168,7 +168,7 @@ def generate_mat_type_from_shape(config, adda_params):
         else:
             return f"coated_{size}"
     elif shape_type == 'read':
-        return "custom_shape"
+        return "custom_shape"  # fallback for read type without explicit MAT_TYPE
     else:
         return f"{shape_type}_{size}"
 

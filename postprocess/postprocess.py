@@ -35,7 +35,20 @@ def load_config(config_file: str = None):
         sys.path.insert(0, str(config_dir))
     
     try:
-        config = __import__(config_module)
+        # Python 모듈명에서 유효하지 않은 문자들을 처리
+        safe_module_name = config_module.replace('-', '_')
+        if safe_module_name[0].isdigit():
+            safe_module_name = 'config_' + safe_module_name
+        
+        # 임시로 모듈명을 변경해서 import
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(safe_module_name, config_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load config from {config_path}")
+        
+        config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(config)
+        
         logger.info(f"Config loaded from: {config_path}")
         return config
     except ImportError as e:
@@ -69,6 +82,12 @@ def extract_refrac_name_from_config(config):
 def generate_mat_type_from_config(config):
     """config에서 자동으로 MAT_TYPE 생성 (일반 모드용)"""
     try:
+        # 먼저 명시적으로 정의된 MAT_TYPE이 있는지 확인
+        explicit_mat_type = getattr(config, 'MAT_TYPE', None)
+        if explicit_mat_type:
+            return explicit_mat_type
+        
+        # MAT_TYPE이 없으면 형상에서 자동 생성
         shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
         shape_type = shape_config.get('type', 'sphere')
         shape_args = shape_config.get('args', [])
@@ -99,7 +118,7 @@ def generate_mat_type_from_config(config):
             else:
                 return f"coated_{size}"
         elif shape_type == 'read':
-            return "custom_shape"
+            return "custom_shape"  # fallback for read type without explicit MAT_TYPE
         else:
             return f"{shape_type}_{size}"
     except Exception as e:
@@ -112,44 +131,51 @@ def generate_refractive_test_mat_type(config):
         # 굴절률 이름 추출
         refrac_name = extract_refrac_name_from_config(config)
         
-        # 형상+크기 조합 생성
-        shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
-        shape_type = shape_config.get('type', 'sphere')
-        shape_args = shape_config.get('args', [])
-        shape_eq_rad = shape_config.get('eq_rad', None)
+        # MAT_TYPE이 명시적으로 정의되어 있는지 확인
+        explicit_mat_type = getattr(config, 'MAT_TYPE', None)
         
-        adda_params = getattr(config, 'ADDA_PARAMS', {})
-        size = adda_params.get('size', 0.02)
-        
-        if shape_type == 'sphere':
-            if shape_eq_rad is not None:
-                shape_size = f"sphere_eq{shape_eq_rad}"
-            else:
-                shape_size = f"sphere_{size}"
-        elif shape_type == 'ellipsoid':
-            if len(shape_args) >= 2:
-                shape_size = f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-            else:
-                shape_size = f"ellipsoid_{size}"
-        elif shape_type == 'cylinder':
-            if len(shape_args) >= 1:
-                shape_size = f"cylinder_{size}_aspect{shape_args[0]}"
-            else:
-                shape_size = f"cylinder_{size}"
-        elif shape_type == 'box':
-            if len(shape_args) >= 2:
-                shape_size = f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
-            else:
-                shape_size = f"box_{size}"
-        elif shape_type == 'coated':
-            if len(shape_args) >= 1:
-                shape_size = f"coated_{size}_ratio{shape_args[0]}"
-            else:
-                shape_size = f"coated_{size}"
-        elif shape_type == 'read':
-            shape_size = "custom_shape"
+        if explicit_mat_type:
+            # MAT_TYPE이 명시되어 있으면 그것을 사용
+            shape_size = explicit_mat_type
         else:
-            shape_size = f"{shape_type}_{size}"
+            # MAT_TYPE이 없으면 형상+크기 조합 생성
+            shape_config = getattr(config, 'SHAPE_CONFIG', {'type': 'sphere', 'args': []})
+            shape_type = shape_config.get('type', 'sphere')
+            shape_args = shape_config.get('args', [])
+            shape_eq_rad = shape_config.get('eq_rad', None)
+            
+            adda_params = getattr(config, 'ADDA_PARAMS', {})
+            size = adda_params.get('size', 0.02)
+            
+            if shape_type == 'sphere':
+                if shape_eq_rad is not None:
+                    shape_size = f"sphere_eq{shape_eq_rad}"
+                else:
+                    shape_size = f"sphere_{size}"
+            elif shape_type == 'ellipsoid':
+                if len(shape_args) >= 2:
+                    shape_size = f"ellipsoid_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+                else:
+                    shape_size = f"ellipsoid_{size}"
+            elif shape_type == 'cylinder':
+                if len(shape_args) >= 1:
+                    shape_size = f"cylinder_{size}_aspect{shape_args[0]}"
+                else:
+                    shape_size = f"cylinder_{size}"
+            elif shape_type == 'box':
+                if len(shape_args) >= 2:
+                    shape_size = f"box_{size}_ratio{shape_args[0]}x{shape_args[1]}"
+                else:
+                    shape_size = f"box_{size}"
+            elif shape_type == 'coated':
+                if len(shape_args) >= 1:
+                    shape_size = f"coated_{size}_ratio{shape_args[0]}"
+                else:
+                    shape_size = f"coated_{size}"
+            elif shape_type == 'read':
+                shape_size = "custom_shape"
+            else:
+                shape_size = f"{shape_type}_{size}"
         
         # 최종 경로: 굴절률이름/형상_크기
         return f"{refrac_name}/{shape_size}"
