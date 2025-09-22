@@ -146,7 +146,7 @@ parse_arguments() {
         CONFIG_FILE="$DEFAULT_CONFIG"
     fi
     
-    # 남은 인수들을 다시 설정
+    # 남은 인수들을 다시 전역 변수로 설정
     set -- "${temp_args[@]}"
 }
 
@@ -654,12 +654,15 @@ clean_results() {
     fi
 }
 
-# 메인 로직
+# 메인 로직 - 이중 실행 문제 해결
 main() {
     # 먼저 config 관련 인수들을 파싱
     parse_arguments "$@"
     
     print_header
+    
+    # 액션 타입 결정 변수
+    local action_performed=false
     
     # 남은 인수들을 다시 파싱해서 실제 명령 실행
     while [[ $# -gt 0 ]]; do
@@ -669,35 +672,39 @@ main() {
                 shift 2
                 ;;
             --refractive-test)
-                check_dependencies
-                run_refractive_test false
-                shift
-                break
-                ;;
-            --sim-only)
-                # --refractive-test와 함께 사용될 수 있는지 확인
-                if [[ "$*" == *"--refractive-test"* ]]; then
+                # --sim-only와 함께 사용될 수 있는지 확인
+                if [[ "$*" == *"--sim-only"* ]]; then
                     check_dependencies
                     run_refractive_test true
-                    shift
+                    action_performed=true
                     break
                 else
                     check_dependencies
-                    run_simulations
-                    shift
+                    run_refractive_test false
+                    action_performed=true
                     break
                 fi
+                ;;
+            --sim-only)
+                # --refractive-test와 함께 사용되지 않는 경우만 처리
+                if [[ "$*" != *"--refractive-test"* ]]; then
+                    check_dependencies
+                    run_simulations
+                    action_performed=true
+                    break
+                fi
+                shift
                 ;;
             --process-only)
                 check_dependencies
                 run_postprocessing
-                shift
+                action_performed=true
                 break
                 ;;
             --process-all)
                 check_dependencies
                 run_postprocessing_all
-                shift
+                action_performed=true
                 break
                 ;;
             --process-model)
@@ -708,51 +715,36 @@ main() {
                 fi
                 check_dependencies
                 run_postprocessing_model "$2"
+                action_performed=true
                 shift 2
                 break
                 ;;
             --check-status)
                 check_structure
                 check_status
-                shift
+                action_performed=true
                 break
                 ;;
             --check-shape)
                 check_structure
                 check_shape_config
-                shift
+                action_performed=true
                 break
                 ;;
             --resume)
                 check_dependencies
                 resume_simulations
-                shift
+                action_performed=true
                 break
                 ;;
             --clean)
                 clean_results
-                shift
+                action_performed=true
                 break
                 ;;
             -h|--help)
                 usage
                 exit 0
-                ;;
-            "")
-                # 기본 동작: 전체 실행 (config 기반)
-                log_step "Running full pipeline (simulation + config-based post-processing)"
-                
-                check_dependencies
-                
-                if run_simulations; then
-                    log_step "Proceeding to config-based post-processing..."
-                    run_postprocessing
-                else
-                    log_error "Simulations failed. Skipping post-processing."
-                    log_info "You can retry with: $0 --resume"
-                    exit 1
-                fi
-                break
                 ;;
             *)
                 log_error "Unknown option: $1"
@@ -763,8 +755,8 @@ main() {
         esac
     done
     
-    # 인수가 없는 경우 기본 동작
-    if [ $# -eq 0 ]; then
+    # 아무 액션도 수행되지 않았다면 기본 동작 (전체 실행)
+    if [ "$action_performed" = false ]; then
         log_step "Running full pipeline (simulation + config-based post-processing)"
         
         check_dependencies
